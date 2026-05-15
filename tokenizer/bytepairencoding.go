@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/dlclark/regexp2"
 	"github.com/ollama/ollama/logutil"
@@ -15,7 +16,8 @@ import (
 type BytePairEncoding struct {
 	vocab         *Vocabulary
 	regexps       []*regexp2.Regexp
-	spaceToSpmSep bool // When true, normalize spaces to ▁ instead of GPT-2 byte-level encoding
+	spaceToSpmSep bool
+	cache         *sync.Map
 }
 
 var _ Tokenizer = (*BytePairEncoding)(nil)
@@ -42,6 +44,7 @@ func NewBytePairEncodingWithOptions(vocab *Vocabulary, pretokenizer []string, op
 func newBytePairEncoding(vocab *Vocabulary, pretokenizer []string, opts ...BPEOption) BytePairEncoding {
 	bpe := BytePairEncoding{
 		vocab: vocab,
+		cache: &sync.Map{},
 	}
 
 	for _, opt := range opts {
@@ -242,6 +245,12 @@ func (bpe BytePairEncoding) Encode(s string, addSpecial bool) ([]int32, error) {
 				continue
 			}
 
+			if cached, ok := bpe.cache.Load(normalized); ok {
+				ids = append(ids, cached.([]int32)...)
+				continue
+			}
+
+			pieceStart := len(ids)
 			runes := []rune(normalized)
 			nodes := make([]bpeNode, len(runes))
 			for r := range runes {
@@ -315,6 +324,8 @@ func (bpe BytePairEncoding) Encode(s string, addSpecial bool) ([]int32, error) {
 					}
 				}
 			}
+
+			bpe.cache.Store(normalized, slices.Clone(ids[pieceStart:]))
 		}
 	}
 
