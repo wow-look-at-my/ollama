@@ -3,6 +3,7 @@ package tokenizer
 import (
 	"log/slog"
 	"slices"
+	"strings"
 	"sync"
 )
 
@@ -30,6 +31,9 @@ type Vocabulary struct {
 
 	mergeOnce sync.Once
 	merge     map[string]int32
+
+	mergeByIDOnce sync.Once
+	mergeByID     map[uint64]int32
 }
 
 func (v *Vocabulary) Is(id int32, special Special) bool {
@@ -105,6 +109,33 @@ func (v *Vocabulary) Merge(left, right string) int {
 	})
 
 	if id, ok := v.merge[left+" "+right]; ok {
+		return int(id)
+	}
+
+	return -1
+}
+
+func mergePairKey(id1, id2 int32) uint64 {
+	return uint64(uint32(id1))<<32 | uint64(uint32(id2))
+}
+
+func (v *Vocabulary) MergeByID(left, right int32) int {
+	v.mergeByIDOnce.Do(func() {
+		v.mergeByID = make(map[uint64]int32, len(v.Merges))
+		for i, m := range v.Merges {
+			parts := strings.SplitN(m, " ", 2)
+			if len(parts) != 2 {
+				continue
+			}
+			leftID := v.Encode(parts[0])
+			rightID := v.Encode(parts[1])
+			if leftID >= 0 && rightID >= 0 {
+				v.mergeByID[mergePairKey(leftID, rightID)] = int32(i)
+			}
+		}
+	})
+
+	if id, ok := v.mergeByID[mergePairKey(left, right)]; ok {
 		return int(id)
 	}
 
