@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"slices"
@@ -118,6 +119,7 @@ type CreateOptions struct {
 	DraftQuantize string           // optional quantization level for draft model tensors
 	Modelfile     *ModelfileConfig // template/system/license/parser/renderer/parameters from Modelfile
 	BaseConfig    *model.ConfigV2
+	DraftDir      string // resolved draft directory (set by CreateModel via DRAFT directive or auto-detection)
 }
 
 // CreateModel imports a model from a local directory.
@@ -128,6 +130,20 @@ func CreateModel(opts CreateOptions, p *progress.Progress) error {
 	isSafetensors := create.IsSafetensorsModelDir(opts.ModelDir)
 	isImageGen := create.IsTensorModelDir(opts.ModelDir)
 	hasDraft := opts.Modelfile != nil && opts.Modelfile.Draft != ""
+
+	// Auto-detect companion MTP assistant model when no DRAFT directive is specified.
+	draftDir := ""
+	if hasDraft {
+		draftDir = opts.Modelfile.Draft
+	} else if isSafetensors {
+		if detected := create.DetectAssistantDir(opts.ModelDir); detected != "" {
+			draftDir = detected
+			hasDraft = true
+			slog.Info("detected MTP assistant model", "path", detected)
+		}
+	}
+
+	opts.DraftDir = draftDir
 	isBaseModelWithDraft := hasDraft && !isSafetensors && create.IsSafetensorsLLMModel(opts.ModelDir)
 	if opts.DraftQuantize != "" && !hasDraft {
 		return fmt.Errorf("--draft-quantize requires a DRAFT model")
@@ -137,8 +153,8 @@ func CreateModel(opts CreateOptions, p *progress.Progress) error {
 		return fmt.Errorf("%s is not a supported model directory (needs config.json + *.safetensors or model_index.json)", opts.ModelDir)
 	}
 
-	if hasDraft && !create.IsSafetensorsModelDir(opts.Modelfile.Draft) {
-		return fmt.Errorf("draft %s is not a supported safetensors model directory", opts.Modelfile.Draft)
+	if hasDraft && !create.IsSafetensorsModelDir(draftDir) {
+		return fmt.Errorf("draft %s is not a supported safetensors model directory", draftDir)
 	}
 	if hasDraft && isImageGen {
 		return fmt.Errorf("draft models are only supported for safetensors LLM models")
@@ -181,7 +197,7 @@ func CreateModel(opts CreateOptions, p *progress.Progress) error {
 	var err error
 	if hasDraft {
 		draftLayers, err = create.CreateDraftSafetensorsLayers(
-			opts.Modelfile.Draft,
+			draftDir,
 			"draft.",
 			"draft",
 			opts.DraftQuantize,
@@ -520,8 +536,12 @@ func newManifestWriter(opts CreateOptions, capabilities []string, parserName, re
 		configData.Requires = MinOllamaVersion
 		configData.Parser = resolveParserName(opts.Modelfile, parserName)
 		configData.Renderer = resolveRendererName(opts.Modelfile, rendererName)
-		if opts.Modelfile != nil && opts.Modelfile.Draft != "" {
-			draft, err := draftMetadata(opts.Modelfile.Draft)
+		draftPath := opts.DraftDir
+		if draftPath == "" && opts.Modelfile != nil {
+			draftPath = opts.Modelfile.Draft
+		}
+		if draftPath != "" {
+			draft, err := draftMetadata(draftPath)
 			if err != nil {
 				return err
 			}
