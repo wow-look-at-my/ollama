@@ -376,7 +376,21 @@ func TestSchedRequestsMultipleLoadedModels(t *testing.T) {
 	time.Sleep(2 * time.Millisecond)
 	s.pendingReqCh <- d.req
 	// finish prior request, so new model can load
-	time.Sleep(6 * time.Millisecond)
+	// Wait for unload to bring loaded count down to 2
+	for {
+		select {
+		case <-ctx.Done():
+			t.Fatal("timeout waiting for unload")
+		default:
+		}
+		s.loadedMu.Lock()
+		n := len(s.loaded)
+		s.loadedMu.Unlock()
+		if n <= 2 {
+			break
+		}
+		time.Sleep(1 * time.Millisecond)
+	}
 	s.loadedMu.Lock()
 	require.Len(t, s.loaded, 2)
 	s.loadedMu.Unlock()
