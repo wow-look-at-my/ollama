@@ -253,6 +253,7 @@ jobs:
 
   test:
     needs: [changes]
+    timeout-minutes: 60
     strategy:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
