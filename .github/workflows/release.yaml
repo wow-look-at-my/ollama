@@ -404,7 +404,6 @@ jobs:
       - uses: docker/build-push-action@v6
         with:
           context: .
-          file: Dockerfile.release
           platforms: ${{ matrix.os }}/${{ matrix.arch }}
           target: ${{ matrix.target }}
           build-args: |
@@ -492,7 +491,6 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: Dockerfile.release
           platforms: ${{ matrix.os }}/${{ matrix.arch }}
           build-args: ${{ matrix.build-args }}
           outputs: type=image,name=${{ vars.DOCKER_REPO }},push-by-digest=true,name-canonical=true,push=true

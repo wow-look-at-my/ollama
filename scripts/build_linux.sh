@@ -30,7 +30,7 @@ docker buildx build \
         --platform=${PLATFORM} \
         ${OLLAMA_COMMON_BUILD_ARGS} \
         --target archive \
-        -f Dockerfile.release \
+        -f Dockerfile \
         .
 
 if echo $PLATFORM | grep "amd64" > /dev/null; then
@@ -44,7 +44,7 @@ if echo $PLATFORM | grep "amd64" > /dev/null; then
         ${OLLAMA_COMMON_BUILD_ARGS} \
         --build-arg FLAVOR=rocm \
         --target archive \
-        -f Dockerfile.release \
+        -f Dockerfile \
         .
 fi
 

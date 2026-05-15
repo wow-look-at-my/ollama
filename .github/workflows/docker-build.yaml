@@ -15,7 +15,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Build Dockerfile
-        run: docker build -t ollama-ci:${{ github.sha }} .
+      - name: Build Dockerfile.ci
+        run: docker build -f Dockerfile.ci -t ollama-ci:${{ github.sha }} .
       - name: Smoke test ollama binary
         run: docker run --rm ollama-ci:${{ github.sha }} --version
