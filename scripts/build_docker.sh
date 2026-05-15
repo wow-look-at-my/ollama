@@ -19,7 +19,7 @@ docker buildx build \
     ${LOAD_OR_PUSH} \
     --platform=${PLATFORM} \
     ${OLLAMA_COMMON_BUILD_ARGS} \
-    -f Dockerfile \
+    -f Dockerfile.release \
     -t ${FINAL_IMAGE_REPO}:$VERSION \
     .
 
@@ -29,7 +29,7 @@ if echo $PLATFORM | grep "amd64" > /dev/null; then
         --platform=linux/amd64 \
         ${OLLAMA_COMMON_BUILD_ARGS} \
         --build-arg FLAVOR=rocm \
-        -f Dockerfile \
+        -f Dockerfile.release \
         -t ${FINAL_IMAGE_REPO}:$VERSION-rocm \
         .
 fi

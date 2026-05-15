@@ -10,6 +10,6 @@ docker build \
     --platform=linux/arm64,linux/amd64 \
     --build-arg=VERSION \
     --build-arg=GOFLAGS \
-    -f Dockerfile \
+    -f Dockerfile.release \
     -t ollama/ollama -t ollama/ollama:$VERSION \
     .
