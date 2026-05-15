@@ -535,8 +535,12 @@ func newManifestWriter(opts CreateOptions, capabilities []string, parserName, re
 		configData.Requires = MinOllamaVersion
 		configData.Parser = resolveParserName(opts.Modelfile, parserName)
 		configData.Renderer = resolveRendererName(opts.Modelfile, rendererName)
-		if opts.DraftDir != "" {
-			draft, err := draftMetadata(opts.DraftDir)
+		draftPath := opts.DraftDir
+		if draftPath == "" && opts.Modelfile != nil {
+			draftPath = opts.Modelfile.Draft
+		}
+		if draftPath != "" {
+			draft, err := draftMetadata(draftPath)
 			if err != nil {
 				return err
 			}

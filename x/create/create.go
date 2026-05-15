@@ -222,6 +222,7 @@ func IsSafetensorsModelDir(dir string) bool {
 // it is automatically bundled with the target model.
 var knownAssistantArchitectures = map[string]bool{
 	"Gemma4AssistantForCausalLM": true,
+	"gemma4_assistant":           true,
 }
 
 // DetectAssistantDir checks whether the target model directory has a companion
