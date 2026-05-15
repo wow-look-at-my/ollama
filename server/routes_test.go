@@ -494,6 +494,68 @@ func TestRoutes(t *testing.T) {
 				}
 			},
 		},
+		{
+			Name:   "Tokenize Handler Missing Body",
+			Method: http.MethodPost,
+			Path:   "/api/tokenize",
+			Expected: func(t *testing.T, resp *http.Response) {
+				if resp.StatusCode != http.StatusBadRequest {
+					t.Errorf("expected status code 400, got %d", resp.StatusCode)
+				}
+			},
+		},
+		{
+			Name:   "Tokenize Handler Model Not Found",
+			Method: http.MethodPost,
+			Path:   "/api/tokenize",
+			Setup: func(t *testing.T, req *http.Request) {
+				body := api.TokenizeRequest{
+					Model:   "non_existent_model",
+					Content: "hello world",
+				}
+				jsonData, err := json.Marshal(body)
+				if err != nil {
+					t.Fatalf("failed to marshal request: %v", err)
+				}
+				req.Body = io.NopCloser(bytes.NewReader(jsonData))
+			},
+			Expected: func(t *testing.T, resp *http.Response) {
+				if resp.StatusCode != http.StatusNotFound {
+					t.Errorf("expected status code 404, got %d", resp.StatusCode)
+				}
+			},
+		},
+		{
+			Name:   "Detokenize Handler Missing Body",
+			Method: http.MethodPost,
+			Path:   "/api/detokenize",
+			Expected: func(t *testing.T, resp *http.Response) {
+				if resp.StatusCode != http.StatusBadRequest {
+					t.Errorf("expected status code 400, got %d", resp.StatusCode)
+				}
+			},
+		},
+		{
+			Name:   "Detokenize Handler Model Not Found",
+			Method: http.MethodPost,
+			Path:   "/api/detokenize",
+			Setup: func(t *testing.T, req *http.Request) {
+				body := api.DetokenizeRequest{
+					Model:  "non_existent_model",
+					Tokens: []int{1, 2, 3},
+				}
+				jsonData, err := json.Marshal(body)
+				if err != nil {
+					t.Fatalf("failed to marshal request: %v", err)
+				}
+				req.Body = io.NopCloser(bytes.NewReader(jsonData))
+			},
+			Expected: func(t *testing.T, resp *http.Response) {
+				if resp.StatusCode != http.StatusNotFound {
+					t.Errorf("expected status code 404, got %d", resp.StatusCode)
+				}
+			},
+		},
 	}
 
 	modelsDir := t.TempDir()
