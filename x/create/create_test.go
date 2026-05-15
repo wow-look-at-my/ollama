@@ -2481,3 +2481,101 @@ func TestCreateImageGenModel_WithQuantize(t *testing.T) {
 		t.Error("no tensors processed")
 	}
 }
+
+func TestDetectAssistantDir(t *testing.T) {
+	tests := []struct {
+		name    string
+		setup   func(parent string) string // returns the target model dir
+		wantDir bool
+	}{
+		{
+			name: "assistant dir exists with correct architecture",
+			setup: func(parent string) string {
+				target := filepath.Join(parent, "gemma-4-31B-it")
+				os.MkdirAll(target, 0o755)
+				os.WriteFile(filepath.Join(target, "config.json"), []byte(`{"architectures":["Gemma4ForCausalLM"]}`), 0o644)
+				createMinimalSafetensors(t, filepath.Join(target, "model.safetensors"))
+
+				assistant := filepath.Join(parent, "gemma-4-31B-it-assistant")
+				os.MkdirAll(assistant, 0o755)
+				os.WriteFile(filepath.Join(assistant, "config.json"), []byte(`{"architectures":["Gemma4AssistantForCausalLM"],"model_type":"gemma4_assistant"}`), 0o644)
+				createMinimalSafetensors(t, filepath.Join(assistant, "model.safetensors"))
+				return target
+			},
+			wantDir: true,
+		},
+		{
+			name: "no assistant dir",
+			setup: func(parent string) string {
+				target := filepath.Join(parent, "gemma-4-31B-it")
+				os.MkdirAll(target, 0o755)
+				os.WriteFile(filepath.Join(target, "config.json"), []byte(`{"architectures":["Gemma4ForCausalLM"]}`), 0o644)
+				createMinimalSafetensors(t, filepath.Join(target, "model.safetensors"))
+				return target
+			},
+			wantDir: false,
+		},
+		{
+			name: "assistant dir exists but wrong architecture",
+			setup: func(parent string) string {
+				target := filepath.Join(parent, "some-model")
+				os.MkdirAll(target, 0o755)
+				os.WriteFile(filepath.Join(target, "config.json"), []byte(`{"architectures":["LlamaForCausalLM"]}`), 0o644)
+				createMinimalSafetensors(t, filepath.Join(target, "model.safetensors"))
+
+				assistant := filepath.Join(parent, "some-model-assistant")
+				os.MkdirAll(assistant, 0o755)
+				os.WriteFile(filepath.Join(assistant, "config.json"), []byte(`{"architectures":["LlamaForCausalLM"]}`), 0o644)
+				createMinimalSafetensors(t, filepath.Join(assistant, "model.safetensors"))
+				return target
+			},
+			wantDir: false,
+		},
+		{
+			name: "assistant dir exists but no safetensors",
+			setup: func(parent string) string {
+				target := filepath.Join(parent, "gemma-4-E4B-it")
+				os.MkdirAll(target, 0o755)
+				os.WriteFile(filepath.Join(target, "config.json"), []byte(`{"architectures":["Gemma4ForCausalLM"]}`), 0o644)
+				createMinimalSafetensors(t, filepath.Join(target, "model.safetensors"))
+
+				assistant := filepath.Join(parent, "gemma-4-E4B-it-assistant")
+				os.MkdirAll(assistant, 0o755)
+				os.WriteFile(filepath.Join(assistant, "config.json"), []byte(`{"architectures":["Gemma4AssistantForCausalLM"]}`), 0o644)
+				return target
+			},
+			wantDir: false,
+		},
+		{
+			name: "assistant detected via model_type",
+			setup: func(parent string) string {
+				target := filepath.Join(parent, "gemma-4-E2B-it")
+				os.MkdirAll(target, 0o755)
+				os.WriteFile(filepath.Join(target, "config.json"), []byte(`{"architectures":["Gemma4ForCausalLM"]}`), 0o644)
+				createMinimalSafetensors(t, filepath.Join(target, "model.safetensors"))
+
+				assistant := filepath.Join(parent, "gemma-4-E2B-it-assistant")
+				os.MkdirAll(assistant, 0o755)
+				os.WriteFile(filepath.Join(assistant, "config.json"), []byte(`{"model_type":"gemma4_assistant","architectures":["Gemma4AssistantForCausalLM"]}`), 0o644)
+				createMinimalSafetensors(t, filepath.Join(assistant, "model.safetensors"))
+				return target
+			},
+			wantDir: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			parent := t.TempDir()
+			targetDir := tt.setup(parent)
+
+			got := DetectAssistantDir(targetDir)
+			if tt.wantDir && got == "" {
+				t.Error("DetectAssistantDir() = \"\", want non-empty")
+			}
+			if !tt.wantDir && got != "" {
+				t.Errorf("DetectAssistantDir() = %q, want \"\"", got)
+			}
+		})
+	}
+}
