@@ -17,7 +17,8 @@ type BytePairEncoding struct {
 	vocab         *Vocabulary
 	regexps       []*regexp2.Regexp
 	spaceToSpmSep bool
-	cache         *sync.Map
+	fragCache     *sync.Map
+	pieceCache    *sync.Map
 }
 
 var _ Tokenizer = (*BytePairEncoding)(nil)
@@ -43,8 +44,9 @@ func NewBytePairEncodingWithOptions(vocab *Vocabulary, pretokenizer []string, op
 
 func newBytePairEncoding(vocab *Vocabulary, pretokenizer []string, opts ...BPEOption) BytePairEncoding {
 	bpe := BytePairEncoding{
-		vocab: vocab,
-		cache: &sync.Map{},
+		vocab:      vocab,
+		fragCache:  &sync.Map{},
+		pieceCache: &sync.Map{},
 	}
 
 	for _, opt := range opts {
@@ -215,6 +217,12 @@ func (bpe BytePairEncoding) Encode(s string, addSpecial bool) ([]int32, error) {
 			continue
 		}
 
+		if cached, ok := bpe.fragCache.Load(frag.value); ok {
+			ids = append(ids, cached.([]int32)...)
+			continue
+		}
+
+		fragStart := len(ids)
 		for split := range bpe.split(frag.value) {
 			// TODO: process splits concurrently
 			var normalized string
@@ -245,7 +253,7 @@ func (bpe BytePairEncoding) Encode(s string, addSpecial bool) ([]int32, error) {
 				continue
 			}
 
-			if cached, ok := bpe.cache.Load(normalized); ok {
+			if cached, ok := bpe.pieceCache.Load(normalized); ok {
 				ids = append(ids, cached.([]int32)...)
 				continue
 			}
@@ -325,8 +333,10 @@ func (bpe BytePairEncoding) Encode(s string, addSpecial bool) ([]int32, error) {
 				}
 			}
 
-			bpe.cache.Store(normalized, slices.Clone(ids[pieceStart:]))
+			bpe.pieceCache.Store(normalized, slices.Clone(ids[pieceStart:]))
 		}
+
+		bpe.fragCache.Store(frag.value, slices.Clone(ids[fragStart:]))
 	}
 
 	if addSpecial {
