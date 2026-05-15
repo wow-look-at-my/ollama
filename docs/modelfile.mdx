@@ -21,6 +21,7 @@ A Modelfile is the blueprint to create and share customized models using Ollama.
   - [ADAPTER](#adapter)
   - [LICENSE](#license)
   - [MESSAGE](#message)
+  - [DRAFT](#draft)
 - [Notes](#notes)
 
 ## Format
@@ -42,6 +43,7 @@ INSTRUCTION arguments
 | [`LICENSE`](#license)               | Specifies the legal license.                                   |
 | [`MESSAGE`](#message)               | Specify message history.                                       |
 | [`REQUIRES`](#requires)             | Specify the minimum version of Ollama required by the model.   |
+| [`DRAFT`](#draft)                   | Attach an MTP assistant model for multi-token prediction.      |
 
 ## Examples
 
@@ -258,6 +260,31 @@ REQUIRES <version>
 ```
 
 The version should be a valid Ollama version (e.g. 0.14.0).
+
+### DRAFT
+
+The `DRAFT` instruction attaches an MTP (Multi-Token Prediction) assistant model for speculative decoding. The assistant model predicts multiple tokens ahead in parallel, which are then verified by the target model, significantly improving generation speed.
+
+```
+DRAFT <path>
+```
+
+The path must point to a local directory containing the assistant model in safetensors format (config.json + *.safetensors files).
+
+#### Example
+
+```
+FROM ./gemma-4-31B-it
+DRAFT ./gemma-4-31B-it-assistant
+```
+
+Gemma 4 models support companion assistant models that provide up to 3x faster inference through multi-token prediction. When creating a Gemma 4 model from a HuggingFace directory, the assistant model is automatically detected if it follows the `{model}-assistant` naming convention in the same parent directory.
+
+You can optionally quantize the draft model independently using the `--draft-quantize` flag:
+
+```bash
+ollama create --experimental -f Modelfile mymodel --draft-quantize mxfp8
+```
 
 ## Notes
 
