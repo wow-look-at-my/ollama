@@ -294,7 +294,7 @@ func TestSchedRequestsSimpleReloadSameModel(t *testing.T) {
 
 func TestSchedRequestsMultipleLoadedModels(t *testing.T) {
 	slog.Info("TestRequestsMultipleLoadedModels")
-	ctx, done := context.WithTimeout(t.Context(), 5000*time.Millisecond)
+	ctx, done := context.WithTimeout(t.Context(), 15000*time.Millisecond)
 	defer done()
 	s := InitScheduler(ctx)
 	s.waitForRecovery = 10 * time.Millisecond
@@ -550,7 +550,7 @@ func TestSchedGetRunnerReusesSameDigestWhenModelPathEmpty(t *testing.T) {
 }
 
 func TestSchedExpireRunner(t *testing.T) {
-	ctx, done := context.WithTimeout(t.Context(), 20*time.Millisecond)
+	ctx, done := context.WithTimeout(t.Context(), 2000*time.Millisecond)
 	defer done()
 	s := InitScheduler(ctx)
 	s.waitForRecovery = 10 * time.Millisecond

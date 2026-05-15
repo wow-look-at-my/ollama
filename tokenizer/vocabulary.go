@@ -3,6 +3,7 @@ package tokenizer
 import (
 	"log/slog"
 	"slices"
+	"strings"
 	"sync"
 )
 
@@ -30,6 +31,14 @@ type Vocabulary struct {
 
 	mergeOnce sync.Once
 	merge     map[string]int32
+
+	mergeByIDOnce sync.Once
+	mergeByID     map[uint64]mergeInfo
+}
+
+type mergeInfo struct {
+	priority int32
+	mergedID int32
 }
 
 func (v *Vocabulary) Is(id int32, special Special) bool {
@@ -109,4 +118,34 @@ func (v *Vocabulary) Merge(left, right string) int {
 	}
 
 	return -1
+}
+
+func mergePairKey(id1, id2 int32) uint64 {
+	return uint64(uint32(id1))<<32 | uint64(uint32(id2))
+}
+
+func (v *Vocabulary) MergeByID(left, right int32) (rank int, mergedID int32, ok bool) {
+	v.mergeByIDOnce.Do(func() {
+		v.mergeByID = make(map[uint64]mergeInfo, len(v.Merges))
+		for i, m := range v.Merges {
+			parts := strings.SplitN(m, " ", 2)
+			if len(parts) != 2 {
+				continue
+			}
+			leftID := v.Encode(parts[0])
+			rightID := v.Encode(parts[1])
+			mid := v.Encode(parts[0] + parts[1])
+			if leftID >= 0 && rightID >= 0 && mid >= 0 {
+				v.mergeByID[mergePairKey(leftID, rightID)] = mergeInfo{
+					priority: int32(i),
+					mergedID: mid,
+				}
+			}
+		}
+	})
+
+	if info, exists := v.mergeByID[mergePairKey(left, right)]; exists {
+		return int(info.priority), info.mergedID, true
+	}
+	return -1, -1, false
 }
