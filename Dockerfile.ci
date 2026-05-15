@@ -1,0 +1,32 @@
+# vim: filetype=dockerfile
+#
+# Lightweight CI build of ollama.
+#
+# Produces a CPU-only Go build of the ollama binary. Intended as a
+# build-sanity check that runs on every push, so it deliberately omits the
+# CUDA, ROCm, Vulkan, JetPack, and MLX backends from the main Dockerfile and
+# can complete on a standard CI runner in a few minutes.
+#
+# For production / GPU-enabled images, use the top-level Dockerfile.
+
+FROM golang:1.26-bookworm AS build
+WORKDIR /go/src/github.com/ollama/ollama
+
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+ENV CGO_ENABLED=1
+RUN --mount=type=cache,target=/root/.cache/go-build \
+    go build -trimpath -buildmode=pie -ldflags='-w -s' -o /bin/ollama .
+
+FROM debian:bookworm-slim
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=build /bin/ollama /usr/bin/ollama
+ENV OLLAMA_HOST=0.0.0.0:11434
+EXPOSE 11434
+ENTRYPOINT ["/usr/bin/ollama"]
+CMD ["serve"]
