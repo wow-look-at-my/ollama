@@ -2482,85 +2482,99 @@ func TestCreateImageGenModel_WithQuantize(t *testing.T) {
 	}
 }
 
+func mustMkdirAll(t *testing.T, path string) {
+	t.Helper()
+	if err := os.MkdirAll(path, 0o755); err != nil {
+		t.Fatalf("MkdirAll(%q): %v", path, err)
+	}
+}
+
+func mustWriteFile(t *testing.T, path string, data []byte) {
+	t.Helper()
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatalf("WriteFile(%q): %v", path, err)
+	}
+}
+
 func TestDetectAssistantDir(t *testing.T) {
 	tests := []struct {
 		name    string
 		setup   func(parent string) string // returns the target model dir
-		wantDir bool
+		wantDir string                     // expected suffix of returned path ("" means no detection)
 	}{
 		{
 			name: "assistant dir exists with correct architecture",
 			setup: func(parent string) string {
 				target := filepath.Join(parent, "gemma-4-31B-it")
-				os.MkdirAll(target, 0o755)
-				os.WriteFile(filepath.Join(target, "config.json"), []byte(`{"architectures":["Gemma4ForCausalLM"]}`), 0o644)
+				mustMkdirAll(t, target)
+				mustWriteFile(t, filepath.Join(target, "config.json"), []byte(`{"architectures":["Gemma4ForCausalLM"]}`))
 				createMinimalSafetensors(t, filepath.Join(target, "model.safetensors"))
 
 				assistant := filepath.Join(parent, "gemma-4-31B-it-assistant")
-				os.MkdirAll(assistant, 0o755)
-				os.WriteFile(filepath.Join(assistant, "config.json"), []byte(`{"architectures":["Gemma4AssistantForCausalLM"],"model_type":"gemma4_assistant"}`), 0o644)
+				mustMkdirAll(t, assistant)
+				mustWriteFile(t, filepath.Join(assistant, "config.json"), []byte(`{"architectures":["Gemma4AssistantForCausalLM"],"model_type":"gemma4_assistant"}`))
 				createMinimalSafetensors(t, filepath.Join(assistant, "model.safetensors"))
 				return target
 			},
-			wantDir: true,
+			wantDir: "gemma-4-31B-it-assistant",
 		},
 		{
 			name: "no assistant dir",
 			setup: func(parent string) string {
 				target := filepath.Join(parent, "gemma-4-31B-it")
-				os.MkdirAll(target, 0o755)
-				os.WriteFile(filepath.Join(target, "config.json"), []byte(`{"architectures":["Gemma4ForCausalLM"]}`), 0o644)
+				mustMkdirAll(t, target)
+				mustWriteFile(t, filepath.Join(target, "config.json"), []byte(`{"architectures":["Gemma4ForCausalLM"]}`))
 				createMinimalSafetensors(t, filepath.Join(target, "model.safetensors"))
 				return target
 			},
-			wantDir: false,
+			wantDir: "",
 		},
 		{
 			name: "assistant dir exists but wrong architecture",
 			setup: func(parent string) string {
 				target := filepath.Join(parent, "some-model")
-				os.MkdirAll(target, 0o755)
-				os.WriteFile(filepath.Join(target, "config.json"), []byte(`{"architectures":["LlamaForCausalLM"]}`), 0o644)
+				mustMkdirAll(t, target)
+				mustWriteFile(t, filepath.Join(target, "config.json"), []byte(`{"architectures":["LlamaForCausalLM"]}`))
 				createMinimalSafetensors(t, filepath.Join(target, "model.safetensors"))
 
 				assistant := filepath.Join(parent, "some-model-assistant")
-				os.MkdirAll(assistant, 0o755)
-				os.WriteFile(filepath.Join(assistant, "config.json"), []byte(`{"architectures":["LlamaForCausalLM"]}`), 0o644)
+				mustMkdirAll(t, assistant)
+				mustWriteFile(t, filepath.Join(assistant, "config.json"), []byte(`{"architectures":["LlamaForCausalLM"]}`))
 				createMinimalSafetensors(t, filepath.Join(assistant, "model.safetensors"))
 				return target
 			},
-			wantDir: false,
+			wantDir: "",
 		},
 		{
 			name: "assistant dir exists but no safetensors",
 			setup: func(parent string) string {
 				target := filepath.Join(parent, "gemma-4-E4B-it")
-				os.MkdirAll(target, 0o755)
-				os.WriteFile(filepath.Join(target, "config.json"), []byte(`{"architectures":["Gemma4ForCausalLM"]}`), 0o644)
+				mustMkdirAll(t, target)
+				mustWriteFile(t, filepath.Join(target, "config.json"), []byte(`{"architectures":["Gemma4ForCausalLM"]}`))
 				createMinimalSafetensors(t, filepath.Join(target, "model.safetensors"))
 
 				assistant := filepath.Join(parent, "gemma-4-E4B-it-assistant")
-				os.MkdirAll(assistant, 0o755)
-				os.WriteFile(filepath.Join(assistant, "config.json"), []byte(`{"architectures":["Gemma4AssistantForCausalLM"]}`), 0o644)
+				mustMkdirAll(t, assistant)
+				mustWriteFile(t, filepath.Join(assistant, "config.json"), []byte(`{"architectures":["Gemma4AssistantForCausalLM"]}`))
 				return target
 			},
-			wantDir: false,
+			wantDir: "",
 		},
 		{
 			name: "assistant detected via model_type",
 			setup: func(parent string) string {
 				target := filepath.Join(parent, "gemma-4-E2B-it")
-				os.MkdirAll(target, 0o755)
-				os.WriteFile(filepath.Join(target, "config.json"), []byte(`{"architectures":["Gemma4ForCausalLM"]}`), 0o644)
+				mustMkdirAll(t, target)
+				mustWriteFile(t, filepath.Join(target, "config.json"), []byte(`{"architectures":["Gemma4ForCausalLM"]}`))
 				createMinimalSafetensors(t, filepath.Join(target, "model.safetensors"))
 
 				assistant := filepath.Join(parent, "gemma-4-E2B-it-assistant")
-				os.MkdirAll(assistant, 0o755)
-				os.WriteFile(filepath.Join(assistant, "config.json"), []byte(`{"model_type":"gemma4_assistant","architectures":["Gemma4AssistantForCausalLM"]}`), 0o644)
+				mustMkdirAll(t, assistant)
+				mustWriteFile(t, filepath.Join(assistant, "config.json"), []byte(`{"model_type":"gemma4_assistant","architectures":["Gemma4AssistantForCausalLM"]}`))
 				createMinimalSafetensors(t, filepath.Join(assistant, "model.safetensors"))
 				return target
 			},
-			wantDir: true,
+			wantDir: "gemma-4-E2B-it-assistant",
 		},
 	}
 
@@ -2570,11 +2584,15 @@ func TestDetectAssistantDir(t *testing.T) {
 			targetDir := tt.setup(parent)
 
 			got := DetectAssistantDir(targetDir)
-			if tt.wantDir && got == "" {
-				t.Error("DetectAssistantDir() = \"\", want non-empty")
-			}
-			if !tt.wantDir && got != "" {
-				t.Errorf("DetectAssistantDir() = %q, want \"\"", got)
+			if tt.wantDir == "" {
+				if got != "" {
+					t.Errorf("DetectAssistantDir() = %q, want \"\"", got)
+				}
+			} else {
+				want := filepath.Join(parent, tt.wantDir)
+				if got != want {
+					t.Errorf("DetectAssistantDir() = %q, want %q", got, want)
+				}
 			}
 		})
 	}

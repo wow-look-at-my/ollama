@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"slices"
@@ -138,7 +139,7 @@ func CreateModel(opts CreateOptions, p *progress.Progress) error {
 		if detected := create.DetectAssistantDir(opts.ModelDir); detected != "" {
 			draftDir = detected
 			hasDraft = true
-			fmt.Printf("Detected MTP assistant model at %s\n", detected)
+			slog.Info("detected MTP assistant model", "path", detected)
 		}
 	}
 

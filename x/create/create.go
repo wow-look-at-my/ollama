@@ -220,9 +220,9 @@ func IsSafetensorsModelDir(dir string) bool {
 // knownAssistantArchitectures lists HuggingFace architectures that are MTP
 // assistant/drafter models. When one of these is found in a sibling directory,
 // it is automatically bundled with the target model.
-var knownAssistantArchitectures = map[string]bool{
-	"Gemma4AssistantForCausalLM": true,
-	"gemma4_assistant":           true,
+var knownAssistantArchitectures = map[string]struct{}{
+	"Gemma4AssistantForCausalLM": {},
+	"gemma4_assistant":           {},
 }
 
 // DetectAssistantDir checks whether the target model directory has a companion
@@ -261,11 +261,12 @@ func isAssistantModelDir(dir string) bool {
 		return false
 	}
 	for _, arch := range cfg.Architectures {
-		if knownAssistantArchitectures[arch] {
+		if _, ok := knownAssistantArchitectures[arch]; ok {
 			return true
 		}
 	}
-	return knownAssistantArchitectures[cfg.ModelType]
+	_, ok := knownAssistantArchitectures[cfg.ModelType]
+	return ok
 }
 
 // LayerInfo holds metadata for a created layer.
