@@ -118,9 +118,9 @@ type fragment struct {
 }
 
 type pair struct {
-	a, b                        int
-	rank                        int
-	leftID, rightID, mergedID   int32
+	a, b                      int
+	rank                      int
+	leftID, rightID, mergedID int32
 }
 
 type pairHeap []pair
