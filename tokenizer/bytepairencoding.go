@@ -1,23 +1,24 @@
 package tokenizer
 
 import (
-	"cmp"
 	"fmt"
 	"iter"
 	"log/slog"
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/dlclark/regexp2"
-	heap "github.com/emirpasic/gods/v2/trees/binaryheap"
 	"github.com/ollama/ollama/logutil"
 )
 
 type BytePairEncoding struct {
 	vocab         *Vocabulary
 	regexps       []*regexp2.Regexp
-	spaceToSpmSep bool // When true, normalize spaces to ▁ instead of GPT-2 byte-level encoding
+	spaceToSpmSep bool
+	fragCache     *sync.Map
+	pieceCache    *sync.Map
 }
 
 var _ Tokenizer = (*BytePairEncoding)(nil)
@@ -43,7 +44,9 @@ func NewBytePairEncodingWithOptions(vocab *Vocabulary, pretokenizer []string, op
 
 func newBytePairEncoding(vocab *Vocabulary, pretokenizer []string, opts ...BPEOption) BytePairEncoding {
 	bpe := BytePairEncoding{
-		vocab: vocab,
+		vocab:      vocab,
+		fragCache:  &sync.Map{},
+		pieceCache: &sync.Map{},
 	}
 
 	for _, opt := range opts {
@@ -114,16 +117,68 @@ type fragment struct {
 	ids   []int32
 }
 
-// pair is a pair of runes and its rank
 type pair struct {
-	a, b  int
-	rank  int
-	value string
+	a, b                      int
+	rank                      int
+	leftID, rightID, mergedID int32
 }
 
-type merge struct {
-	p, n  int
-	runes []rune
+type pairHeap []pair
+
+func (h *pairHeap) init() {
+	n := len(*h)
+	for i := n/2 - 1; i >= 0; i-- {
+		h.down(i, n)
+	}
+}
+
+func (h *pairHeap) push(p pair) {
+	*h = append(*h, p)
+	h.up(len(*h) - 1)
+}
+
+func (h *pairHeap) pop() pair {
+	s := *h
+	n := len(s) - 1
+	s[0], s[n] = s[n], s[0]
+	*h = s[:n]
+	h.down(0, n)
+	return s[n]
+}
+
+func (h pairHeap) up(j int) {
+	for {
+		i := (j - 1) / 2
+		if i == j || h[j].rank >= h[i].rank {
+			break
+		}
+		h[i], h[j] = h[j], h[i]
+		j = i
+	}
+}
+
+func (h pairHeap) down(i0, n int) {
+	i := i0
+	for {
+		j := 2*i + 1
+		if j >= n || j < 0 {
+			break
+		}
+		if j2 := j + 1; j2 < n && h[j2].rank < h[j].rank {
+			j = j2
+		}
+		if h[j].rank >= h[i].rank {
+			break
+		}
+		h[i], h[j] = h[j], h[i]
+		i = j
+	}
+}
+
+type bpeNode struct {
+	p, n int
+	id   int32
+	r    rune
 }
 
 func (bpe BytePairEncoding) Encode(s string, addSpecial bool) ([]int32, error) {
@@ -162,6 +217,12 @@ func (bpe BytePairEncoding) Encode(s string, addSpecial bool) ([]int32, error) {
 			continue
 		}
 
+		if cached, ok := bpe.fragCache.Load(frag.value); ok {
+			ids = append(ids, cached.([]int32)...)
+			continue
+		}
+
+		fragStart := len(ids)
 		for split := range bpe.split(frag.value) {
 			// TODO: process splits concurrently
 			var normalized string
@@ -192,92 +253,90 @@ func (bpe BytePairEncoding) Encode(s string, addSpecial bool) ([]int32, error) {
 				continue
 			}
 
+			if cached, ok := bpe.pieceCache.Load(normalized); ok {
+				ids = append(ids, cached.([]int32)...)
+				continue
+			}
+
+			pieceStart := len(ids)
 			runes := []rune(normalized)
-			merges := make([]merge, len(runes))
+			nodes := make([]bpeNode, len(runes))
 			for r := range runes {
-				merges[r] = merge{
-					p:     r - 1,
-					n:     r + 1,
-					runes: []rune{runes[r]},
+				nodes[r] = bpeNode{
+					p:  r - 1,
+					n:  r + 1,
+					id: bpe.vocab.Encode(string(runes[r : r+1])),
+					r:  runes[r],
 				}
 			}
 
-			pairwise := func(a, b int) *pair {
-				if a < 0 || b >= len(runes) {
-					return nil
+			pairwise := func(a, b int) (pair, bool) {
+				if a < 0 || b >= len(runes) || nodes[a].id < 0 || nodes[b].id < 0 {
+					return pair{}, false
 				}
-
-				left, right := string(merges[a].runes), string(merges[b].runes)
-				rank := bpe.vocab.Merge(left, right)
-				if rank < 0 {
-					return nil
+				rank, mergedID, ok := bpe.vocab.MergeByID(nodes[a].id, nodes[b].id)
+				if !ok {
+					return pair{}, false
 				}
-
-				return &pair{
-					a:     a,
-					b:     b,
-					rank:  rank,
-					value: left + right,
-				}
+				return pair{
+					a: a, b: b,
+					rank:     rank,
+					leftID:   nodes[a].id,
+					rightID:  nodes[b].id,
+					mergedID: mergedID,
+				}, true
 			}
 
-			pairs := heap.NewWith(func(i, j *pair) int {
-				return cmp.Compare(i.rank, j.rank)
-			})
-
+			h := make(pairHeap, 0, len(runes))
 			for i := range len(runes) - 1 {
-				if pair := pairwise(i, i+1); pair != nil {
-					pairs.Push(pair)
+				if p, ok := pairwise(i, i+1); ok {
+					h = append(h, p)
 				}
 			}
+			h.init()
 
-			for !pairs.Empty() {
-				pair, _ := pairs.Pop()
+			for len(h) > 0 {
+				p := h.pop()
 
-				left, right := merges[pair.a], merges[pair.b]
-				if len(left.runes) == 0 || len(right.runes) == 0 ||
-					string(left.runes)+string(right.runes) != pair.value {
+				if nodes[p.a].id != p.leftID || nodes[p.b].id != p.rightID {
 					continue
 				}
 
-				if id := bpe.vocab.Encode(pair.value); id < 0 {
-					continue
+				nodes[p.a].id = p.mergedID
+				nodes[p.b].id = -1
+
+				nodes[p.a].n = nodes[p.b].n
+				if nodes[p.b].n < len(nodes) {
+					nodes[nodes[p.b].n].p = p.a
 				}
 
-				merges[pair.a].runes = append(left.runes, right.runes...)
-				merges[pair.b].runes = nil
-
-				merges[pair.a].n = right.n
-				if right.n < len(merges) {
-					merges[right.n].p = pair.a
+				if np, ok := pairwise(nodes[p.a].p, p.a); ok {
+					h.push(np)
 				}
 
-				if pair := pairwise(merges[pair.a].p, pair.a); pair != nil {
-					pairs.Push(pair)
-				}
-
-				if pair := pairwise(pair.a, merges[pair.a].n); pair != nil {
-					pairs.Push(pair)
+				if np, ok := pairwise(p.a, nodes[p.a].n); ok {
+					h.push(np)
 				}
 			}
 
-			for _, merge := range merges {
-				if len(merge.runes) > 0 {
-					if id := bpe.vocab.Encode(string(merge.runes)); id >= 0 {
-						ids = append(ids, id)
-					} else if bpe.spaceToSpmSep {
-						// SentencePiece byte fallback: encode each UTF-8 byte as <0xHH>
-						for _, b := range []byte(string(merge.runes)) {
-							if id := bpe.vocab.Encode(fmt.Sprintf("<0x%02X>", b)); id >= 0 {
-								ids = append(ids, id)
-							} else {
-								slog.Debug("unknown byte token", "byte", b)
-							}
+			for idx := 0; idx < len(nodes); idx = nodes[idx].n {
+				if nodes[idx].id >= 0 {
+					ids = append(ids, nodes[idx].id)
+				} else if bpe.spaceToSpmSep {
+					for _, b := range []byte(string(nodes[idx].r)) {
+						if id := bpe.vocab.Encode(fmt.Sprintf("<0x%02X>", b)); id >= 0 {
+							ids = append(ids, id)
+						} else {
+							slog.Debug("unknown byte token", "byte", b)
 						}
 					}
 				}
 			}
+
+			bpe.pieceCache.Store(normalized, slices.Clone(ids[pieceStart:]))
 		}
+
+		bpe.fragCache.Store(frag.value, slices.Clone(ids[fragStart:]))
 	}
 
 	if addSpecial {
