@@ -33,7 +33,12 @@ type Vocabulary struct {
 	merge     map[string]int32
 
 	mergeByIDOnce sync.Once
-	mergeByID     map[uint64]int32
+	mergeByID     map[uint64]mergeInfo
+}
+
+type mergeInfo struct {
+	priority int32
+	mergedID int32
 }
 
 func (v *Vocabulary) Is(id int32, special Special) bool {
@@ -119,9 +124,9 @@ func mergePairKey(id1, id2 int32) uint64 {
 	return uint64(uint32(id1))<<32 | uint64(uint32(id2))
 }
 
-func (v *Vocabulary) MergeByID(left, right int32) int {
+func (v *Vocabulary) MergeByID(left, right int32) (rank int, mergedID int32, ok bool) {
 	v.mergeByIDOnce.Do(func() {
-		v.mergeByID = make(map[uint64]int32, len(v.Merges))
+		v.mergeByID = make(map[uint64]mergeInfo, len(v.Merges))
 		for i, m := range v.Merges {
 			parts := strings.SplitN(m, " ", 2)
 			if len(parts) != 2 {
@@ -129,15 +134,18 @@ func (v *Vocabulary) MergeByID(left, right int32) int {
 			}
 			leftID := v.Encode(parts[0])
 			rightID := v.Encode(parts[1])
-			if leftID >= 0 && rightID >= 0 {
-				v.mergeByID[mergePairKey(leftID, rightID)] = int32(i)
+			mid := v.Encode(parts[0] + parts[1])
+			if leftID >= 0 && rightID >= 0 && mid >= 0 {
+				v.mergeByID[mergePairKey(leftID, rightID)] = mergeInfo{
+					priority: int32(i),
+					mergedID: mid,
+				}
 			}
 		}
 	})
 
-	if id, ok := v.mergeByID[mergePairKey(left, right)]; ok {
-		return int(id)
+	if info, exists := v.mergeByID[mergePairKey(left, right)]; exists {
+		return int(info.priority), info.mergedID, true
 	}
-
-	return -1
+	return -1, -1, false
 }

@@ -1,7 +1,6 @@
 package tokenizer
 
 import (
-	"container/heap"
 	"fmt"
 	"iter"
 	"log/slog"
@@ -114,30 +113,67 @@ type fragment struct {
 }
 
 type pair struct {
-	a, b            int
-	rank            int
-	leftID, rightID int32
+	a, b                        int
+	rank                        int
+	leftID, rightID, mergedID   int32
 }
 
-type pairHeap []*pair
+type pairHeap []pair
 
-func (h pairHeap) Len() int            { return len(h) }
-func (h pairHeap) Less(i, j int) bool  { return h[i].rank < h[j].rank }
-func (h pairHeap) Swap(i, j int)       { h[i], h[j] = h[j], h[i] }
-func (h *pairHeap) Push(x any)         { *h = append(*h, x.(*pair)) }
-func (h *pairHeap) Pop() any {
-	old := *h
-	n := len(old)
-	x := old[n-1]
-	old[n-1] = nil
-	*h = old[:n-1]
-	return x
+func (h *pairHeap) init() {
+	n := len(*h)
+	for i := n/2 - 1; i >= 0; i-- {
+		h.down(i, n)
+	}
 }
 
-type merge struct {
-	p, n  int
-	runes []rune
-	id    int32
+func (h *pairHeap) push(p pair) {
+	*h = append(*h, p)
+	h.up(len(*h) - 1)
+}
+
+func (h *pairHeap) pop() pair {
+	s := *h
+	n := len(s) - 1
+	s[0], s[n] = s[n], s[0]
+	*h = s[:n]
+	h.down(0, n)
+	return s[n]
+}
+
+func (h pairHeap) up(j int) {
+	for {
+		i := (j - 1) / 2
+		if i == j || h[j].rank >= h[i].rank {
+			break
+		}
+		h[i], h[j] = h[j], h[i]
+		j = i
+	}
+}
+
+func (h pairHeap) down(i0, n int) {
+	i := i0
+	for {
+		j := 2*i + 1
+		if j >= n || j < 0 {
+			break
+		}
+		if j2 := j + 1; j2 < n && h[j2].rank < h[j].rank {
+			j = j2
+		}
+		if h[j].rank >= h[i].rank {
+			break
+		}
+		h[i], h[j] = h[j], h[i]
+		i = j
+	}
+}
+
+type bpeNode struct {
+	p, n int
+	id   int32
+	r    rune
 }
 
 func (bpe BytePairEncoding) Encode(s string, addSpecial bool) ([]int32, error) {
@@ -207,88 +243,74 @@ func (bpe BytePairEncoding) Encode(s string, addSpecial bool) ([]int32, error) {
 			}
 
 			runes := []rune(normalized)
-			nodes := make([]merge, len(runes))
+			nodes := make([]bpeNode, len(runes))
 			for r := range runes {
-				nodes[r] = merge{
-					p:     r - 1,
-					n:     r + 1,
-					runes: []rune{runes[r]},
-					id:    bpe.vocab.Encode(string(runes[r : r+1])),
+				nodes[r] = bpeNode{
+					p:  r - 1,
+					n:  r + 1,
+					id: bpe.vocab.Encode(string(runes[r : r+1])),
+					r:  runes[r],
 				}
 			}
 
-			pairwise := func(a, b int) *pair {
-				if a < 0 || b >= len(runes) {
-					return nil
+			pairwise := func(a, b int) (pair, bool) {
+				if a < 0 || b >= len(runes) || nodes[a].id < 0 || nodes[b].id < 0 {
+					return pair{}, false
 				}
-
-				rank := bpe.vocab.MergeByID(nodes[a].id, nodes[b].id)
-				if rank < 0 {
-					return nil
+				rank, mergedID, ok := bpe.vocab.MergeByID(nodes[a].id, nodes[b].id)
+				if !ok {
+					return pair{}, false
 				}
-
-				return &pair{
-					a:       a,
-					b:       b,
-					rank:    rank,
-					leftID:  nodes[a].id,
-					rightID: nodes[b].id,
-				}
+				return pair{
+					a: a, b: b,
+					rank:     rank,
+					leftID:   nodes[a].id,
+					rightID:  nodes[b].id,
+					mergedID: mergedID,
+				}, true
 			}
 
-			h := &pairHeap{}
+			h := make(pairHeap, 0, len(runes))
 			for i := range len(runes) - 1 {
-				if p := pairwise(i, i+1); p != nil {
-					*h = append(*h, p)
+				if p, ok := pairwise(i, i+1); ok {
+					h = append(h, p)
 				}
 			}
-			heap.Init(h)
+			h.init()
 
-			for h.Len() > 0 {
-				p := heap.Pop(h).(*pair)
+			for len(h) > 0 {
+				p := h.pop()
 
-				left, right := nodes[p.a], nodes[p.b]
-				if left.id != p.leftID || right.id != p.rightID {
+				if nodes[p.a].id != p.leftID || nodes[p.b].id != p.rightID {
 					continue
 				}
 
-				merged := string(left.runes) + string(right.runes)
-				mergedID := bpe.vocab.Encode(merged)
-				if mergedID < 0 {
-					continue
-				}
-
-				nodes[p.a].runes = append(left.runes, right.runes...)
-				nodes[p.a].id = mergedID
-				nodes[p.b].runes = nil
+				nodes[p.a].id = p.mergedID
 				nodes[p.b].id = -1
 
-				nodes[p.a].n = right.n
-				if right.n < len(nodes) {
-					nodes[right.n].p = p.a
+				nodes[p.a].n = nodes[p.b].n
+				if nodes[p.b].n < len(nodes) {
+					nodes[nodes[p.b].n].p = p.a
 				}
 
-				if np := pairwise(nodes[p.a].p, p.a); np != nil {
-					heap.Push(h, np)
+				if np, ok := pairwise(nodes[p.a].p, p.a); ok {
+					h.push(np)
 				}
 
-				if np := pairwise(p.a, nodes[p.a].n); np != nil {
-					heap.Push(h, np)
+				if np, ok := pairwise(p.a, nodes[p.a].n); ok {
+					h.push(np)
 				}
 			}
 
-			for _, merge := range nodes {
-				if len(merge.runes) > 0 {
-					if id := bpe.vocab.Encode(string(merge.runes)); id >= 0 {
-						ids = append(ids, id)
-					} else if bpe.spaceToSpmSep {
-						// SentencePiece byte fallback: encode each UTF-8 byte as <0xHH>
-						for _, b := range []byte(string(merge.runes)) {
-							if id := bpe.vocab.Encode(fmt.Sprintf("<0x%02X>", b)); id >= 0 {
-								ids = append(ids, id)
-							} else {
-								slog.Debug("unknown byte token", "byte", b)
-							}
+			for idx := 0; idx < len(nodes); idx = nodes[idx].n {
+				if nodes[idx].id >= 0 {
+					ids = append(ids, nodes[idx].id)
+				} else if bpe.spaceToSpmSep {
+					for _, b := range []byte(string(nodes[idx].r)) {
+						if id := bpe.vocab.Encode(fmt.Sprintf("<0x%02X>", b)); id >= 0 {
+							ids = append(ids, id)
+						} else {
+							slog.Debug("unknown byte token", "byte", b)
 						}
 					}
 				}
