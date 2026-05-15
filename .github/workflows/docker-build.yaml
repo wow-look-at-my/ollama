@@ -16,4 +16,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Build Dockerfile
-        run: docker build .
+        run: docker build --target ci -t ollama-ci:${{ github.sha }} .
+      - name: Verify ollama binary
+        run: docker run --rm ollama-ci:${{ github.sha }} --version
