@@ -1,15 +1,5 @@
 # vim: filetype=dockerfile
 
-# CI-only stage: lightweight Go build for validating the Dockerfile on every push.
-# Usage: docker build --target ci .
-FROM golang:1.26-bookworm AS ci
-WORKDIR /go/src/github.com/ollama/ollama
-COPY go.mod go.sum ./
-RUN go mod download
-COPY . .
-ENV CGO_ENABLED=1
-RUN go build -trimpath -buildmode=pie -ldflags='-w -s' -o /bin/ollama .
-
 ARG FLAVOR=${TARGETARCH}
 
 ARG ROCMVERSION=7.2.1
