@@ -422,6 +422,24 @@ func (c *Client) Heartbeat(ctx context.Context) error {
 	return nil
 }
 
+// Tokenize converts text into tokens using the specified model's tokenizer.
+func (c *Client) Tokenize(ctx context.Context, req *TokenizeRequest) (*TokenizeResponse, error) {
+	var resp TokenizeResponse
+	if err := c.do(ctx, http.MethodPost, "/api/tokenize", req, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+// Detokenize converts tokens back into text using the specified model's tokenizer.
+func (c *Client) Detokenize(ctx context.Context, req *DetokenizeRequest) (*DetokenizeResponse, error) {
+	var resp DetokenizeResponse
+	if err := c.do(ctx, http.MethodPost, "/api/detokenize", req, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
 // Embed generates embeddings from a model.
 func (c *Client) Embed(ctx context.Context, req *EmbedRequest) (*EmbedResponse, error) {
 	var resp EmbedResponse
