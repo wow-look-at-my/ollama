@@ -22,4 +22,6 @@ jobs:
           sudo docker system prune -af
           df -h /
       - name: Build Dockerfile
-        run: docker build .
+        run: docker build -t ollama:${{ github.sha }} .
+      - name: Verify ollama binary
+        run: docker run --rm ollama:${{ github.sha }} --version
