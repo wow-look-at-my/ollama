@@ -84,14 +84,17 @@ for arg in "$@"; do
             [[ "$gencode" =~ arch=(compute_[a-z0-9]+) ]] && arch_val="${BASH_REMATCH[1]}"
 
             if [ -n "$arch_val" ]; then
-                # Strip the arch-specific number from preprocessed output.
-                # __CUDA_ARCH__ expands to e.g. 800, __CUDA_ARCH_LIST__ to
-                # the single arch number when preprocessing individually.
-                # Replace that specific number so equivalent arches hash same.
+                # Compute the __CUDA_ARCH__ value: major*100 + minor*10
+                # e.g. compute_75 -> 750, compute_90a -> 900, compute_103 -> 1030
                 arch_num="${arch_val#compute_}"
+                arch_num_clean="${arch_num%%[a-z]*}"  # strip suffix like 'a'
+                cuda_arch_val=$((arch_num_clean * 10))
+
+                # Replace __CUDA_ARCH__ and __CUDA_ARCH_LIST__ values with 0
+                # using word-boundary matching to avoid mangling unrelated numbers
                 pp_hash=$("$NVCC" -E -arch="$arch_val" "${include_flags[@]}" "$src_file" 2>/dev/null \
                     | grep -v '^#' \
-                    | sed "s/${arch_num}/0/g" \
+                    | sed "s/\b${cuda_arch_val}\b/0/g" \
                     | md5sum | cut -d' ' -f1) || pp_hash="$arg"
                 arch_hashes["$arg"]="$pp_hash"
                 if [ -z "${hash_to_first_arch[$pp_hash]+x}" ]; then
@@ -120,8 +123,8 @@ log "  preprocessed in ${t_preprocess}s: ${n_virtual} virtual -> ${n_unique} uni
 # One-time: dump diff between first two arches to diagnose why they hash differently
 if [ "$n_unique" -eq "$n_virtual" ] && [ "$n_virtual" -ge 2 ] && [ ! -f /tmp/nvcc-dedup-diffed ]; then
     touch /tmp/nvcc-dedup-diffed
-    a1="${virtual_gencodes[0]}"
-    a2="${virtual_gencodes[1]}"
+    a1="${virtual_gencodes[1]}"
+    a2="${virtual_gencodes[2]}"
     g1="${a1#*=}"; av1=""; [[ "$g1" =~ arch=(compute_[a-z0-9]+) ]] && av1="${BASH_REMATCH[1]}"
     g2="${a2#*=}"; av2=""; [[ "$g2" =~ arch=(compute_[a-z0-9]+) ]] && av2="${BASH_REMATCH[1]}"
     n1="${av1#compute_}"; n2="${av2#compute_}"
