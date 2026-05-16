@@ -19,12 +19,12 @@ COPY CMakeLists.txt CMakePresets.json ./
 COPY ml/backend/ggml/ggml ml/backend/ggml/ggml
 
 RUN --mount=type=cache,target=/root/.cache/ccache \
-    cmake --preset CPU \
+    cmake --preset CPU -DCMAKE_CUDA_COMPILER_LAUNCHER=/usr/local/bin/nvcc-dedup \
     && cmake --build --preset CPU -j$(nproc) \
     && cmake --install build --component CPU --strip
 
 RUN --mount=type=cache,target=/root/.cache/ccache \
-    cmake --preset 'CUDA 13' \
+    cmake --preset 'CUDA 13' -DCMAKE_CUDA_COMPILER_LAUNCHER=/usr/local/bin/nvcc-dedup \
     && cmake --build --preset 'CUDA 13' -j$(nproc) \
     && cmake --install build --component CUDA --strip
 

@@ -18,6 +18,8 @@ set -euo pipefail
 NVCC="$1"
 shift
 
+log() { echo "[nvcc-dedup] $*" >&2; }
+
 CACHE_DIR="${NVCC_DEDUP_CACHE_DIR:-/tmp/nvcc-dedup-cache}"
 mkdir -p "$CACHE_DIR"
 
@@ -45,6 +47,9 @@ done
 if [ -z "$output_file" ] || [ -z "$src_file" ] || [ ! -f "$src_file" ] || [ "$gencode_count" -le 1 ]; then
     exec "$NVCC" "$@"
 fi
+
+log "Processing $(basename "$src_file") with $gencode_count gencode flags"
+t_start=$SECONDS
 
 # Preprocess each virtual arch, hash the output, group by hash.
 declare -A hash_to_first_arch  # hash -> first -gencode flag with this hash
@@ -90,6 +95,12 @@ for arg in "${virtual_gencodes[@]}"; do
     fi
 done
 
+t_preprocess=$((SECONDS - t_start))
+n_virtual=${#virtual_gencodes[@]}
+n_unique=${#unique_gencodes[@]}
+n_sass=${#sass_gencodes[@]}
+log "  preprocessed in ${t_preprocess}s: ${n_virtual} virtual -> ${n_unique} unique, ${n_sass} sass"
+
 # Cache key: hash of (all non-gencode flags + unique gencode set + source hash).
 src_hash=$(md5sum "$src_file" | cut -d' ' -f1)
 flags_for_key=""
@@ -104,6 +115,7 @@ cached="$CACHE_DIR/$cache_key.o"
 
 # Cache hit: copy cached object file.
 if [ -f "$cached" ]; then
+    log "  CACHE HIT -> $output_file"
     cp "$cached" "$output_file"
     exit 0
 fi
@@ -113,7 +125,6 @@ new_args=()
 for arg in "$@"; do
     case "$arg" in
         -gencode=*|--generate-code=*)
-            # Skip — we'll add the kept ones at the end.
             ;;
         *)
             new_args+=("$arg")
@@ -122,7 +133,10 @@ for arg in "$@"; do
 done
 new_args+=("${unique_gencodes[@]}" "${sass_gencodes[@]}")
 
+t_compile_start=$SECONDS
 "$NVCC" "${new_args[@]}"
+t_compile=$((SECONDS - t_compile_start))
+log "  compiled in ${t_compile}s (${n_unique} arches instead of ${n_virtual})"
 
 # Cache the result.
 if [ -f "$output_file" ]; then
