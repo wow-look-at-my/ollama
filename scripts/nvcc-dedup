@@ -125,9 +125,9 @@ if [ "$n_unique" -eq "$n_virtual" ] && [ "$n_virtual" -ge 2 ] && [ ! -f /tmp/nvc
     g1="${a1#*=}"; av1=""; [[ "$g1" =~ arch=(compute_[a-z0-9]+) ]] && av1="${BASH_REMATCH[1]}"
     g2="${a2#*=}"; av2=""; [[ "$g2" =~ arch=(compute_[a-z0-9]+) ]] && av2="${BASH_REMATCH[1]}"
     n1="${av1#compute_}"; n2="${av2#compute_}"
-    "$NVCC" -E -arch="$av1" "${include_flags[@]}" "$src_file" 2>/dev/null | grep -v '^#' | sed "s/${n1}/0/g" > /tmp/pp1.txt
-    "$NVCC" -E -arch="$av2" "${include_flags[@]}" "$src_file" 2>/dev/null | grep -v '^#' | sed "s/${n2}/0/g" > /tmp/pp2.txt
-    difflines=$(diff /tmp/pp1.txt /tmp/pp2.txt | head -20)
+    "$NVCC" -E -arch="$av1" "${include_flags[@]}" "$src_file" 2>/dev/null | grep -v '^#' | sed "s/${n1}/0/g" > /tmp/pp1.txt || true
+    "$NVCC" -E -arch="$av2" "${include_flags[@]}" "$src_file" 2>/dev/null | grep -v '^#' | sed "s/${n2}/0/g" > /tmp/pp2.txt || true
+    difflines=$(diff /tmp/pp1.txt /tmp/pp2.txt 2>&1 | head -20 || true)
     log "  DIFF between $av1 and $av2: $difflines"
 fi
 
