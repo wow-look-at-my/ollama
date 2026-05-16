@@ -1,0 +1,96 @@
+#!/bin/bash
+#
+# nvcc wrapper that deduplicates virtual CUDA architectures producing
+# identical preprocessed output. For each -gencode with code=compute_*
+# (PTX-only), preprocesses the source for that arch, hashes the result,
+# and drops arches whose hash matches an earlier one. SASS arches
+# (code=sm_*) are always kept.
+#
+# Set CMAKE_CUDA_COMPILER_LAUNCHER to this script. cmake passes the
+# real nvcc path as the first argument.
+
+set -euo pipefail
+
+NVCC="$1"
+shift
+
+# Build the launch prefix: chain ccache if available.
+LAUNCH=("$NVCC")
+if command -v ccache >/dev/null 2>&1; then
+    LAUNCH=(ccache "$NVCC")
+fi
+
+# Fast path: <= 1 gencode flag means nothing to deduplicate.
+gencode_count=0
+for arg in "$@"; do
+    case "$arg" in -gencode*|--generate-code*) gencode_count=$((gencode_count + 1));; esac
+done
+if [ "$gencode_count" -le 1 ]; then
+    exec "${LAUNCH[@]}" "$@"
+fi
+
+# Find the source file and collect include flags for preprocessing.
+src_file=""
+include_flags=()
+for arg in "$@"; do
+    case "$arg" in
+        *.cu) src_file="$arg" ;;
+        -I*|-isystem*|--include-path*) include_flags+=("$arg") ;;
+    esac
+done
+
+if [ -z "$src_file" ] || [ ! -f "$src_file" ]; then
+    exec "${LAUNCH[@]}" "$@"
+fi
+
+# For each virtual -gencode, preprocess and hash. Drop duplicates.
+declare -A seen_hashes
+drop_args=()
+
+for arg in "$@"; do
+    case "$arg" in
+        -gencode=*|--generate-code=*)
+            gencode="${arg#*=}"
+
+            code_val=""
+            [[ "$gencode" =~ code=([a-z_0-9]+) ]] && code_val="${BASH_REMATCH[1]}"
+
+            # SASS arches produce arch-specific machine code; always keep.
+            if [[ "$code_val" != compute_* ]]; then
+                continue
+            fi
+
+            arch_val=""
+            [[ "$gencode" =~ arch=([a-z_0-9]+) ]] && arch_val="${BASH_REMATCH[1]}"
+
+            if [ -n "$arch_val" ]; then
+                pp_hash=$("$NVCC" -E -arch="$arch_val" "${include_flags[@]}" "$src_file" 2>/dev/null \
+                    | grep -v '^#' | md5sum | cut -d' ' -f1) || pp_hash=""
+                if [ -n "$pp_hash" ] && [ -n "${seen_hashes[$pp_hash]+x}" ]; then
+                    drop_args+=("$arg")
+                    continue
+                fi
+                [ -n "$pp_hash" ] && seen_hashes["$pp_hash"]=1
+            fi
+            ;;
+    esac
+done
+
+if [ ${#drop_args[@]} -eq 0 ]; then
+    exec "${LAUNCH[@]}" "$@"
+fi
+
+# Rebuild args without the dropped -gencode flags.
+new_args=()
+for arg in "$@"; do
+    skip=0
+    for drop in "${drop_args[@]}"; do
+        if [ "$arg" = "$drop" ]; then
+            skip=1
+            break
+        fi
+    done
+    [ "$skip" -eq 0 ] && new_args+=("$arg")
+done
+
+exec "${LAUNCH[@]}" "${new_args[@]}"
