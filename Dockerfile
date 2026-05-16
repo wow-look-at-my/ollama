@@ -23,6 +23,10 @@ RUN --mount=type=cache,target=/root/.cache/ccache \
     && cmake --build --preset CPU -j$(nproc) \
     && cmake --install build --component CPU --strip
 
+RUN cmake --preset 'CUDA 13' -DCMAKE_CUDA_COMPILER_LAUNCHER=/usr/local/bin/nvcc-dedup \
+    && ninja -C build -n -j1 2>&1 | grep -m1 'nvcc\|gencode' \
+    && echo "=== DRY RUN ABOVE ==="
+
 RUN --mount=type=cache,target=/root/.cache/ccache \
     cmake --preset 'CUDA 13' -DCMAKE_CUDA_COMPILER_LAUNCHER=/usr/local/bin/nvcc-dedup \
     && cmake --build --preset 'CUDA 13' -j$(nproc) \
