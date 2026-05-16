@@ -49,6 +49,9 @@ if [ -z "$output_file" ] || [ -z "$src_file" ] || [ ! -f "$src_file" ] || [ "$ge
 fi
 
 log "Processing $(basename "$src_file") with $gencode_count gencode flags"
+for arg in "$@"; do
+    case "$arg" in -gencode*|--generate-code*) log "  arg: '$arg'"; break;; esac
+done
 t_start=$SECONDS
 
 # Preprocess each virtual arch, hash the output, group by hash.
@@ -61,17 +64,17 @@ for arg in "$@"; do
     case "$arg" in
         -gencode=*|--generate-code=*)
             gencode="${arg#*=}"
-            code_val=""
-            [[ "$gencode" =~ code=([a-z_0-9]+) ]] && code_val="${BASH_REMATCH[1]}"
 
-            if [[ "$code_val" != compute_* ]]; then
+            # Detect virtual: check if compute_ appears in the code= value.
+            # Handles all cmake formats: code=compute_75, code=[compute_75,sm_75], etc.
+            if [[ "$gencode" != *code=*compute_* ]]; then
                 sass_gencodes+=("$arg")
                 continue
             fi
 
             virtual_gencodes+=("$arg")
             arch_val=""
-            [[ "$gencode" =~ arch=([a-z_0-9]+) ]] && arch_val="${BASH_REMATCH[1]}"
+            [[ "$gencode" =~ arch=(compute_[a-z0-9]+) ]] && arch_val="${BASH_REMATCH[1]}"
 
             if [ -n "$arch_val" ]; then
                 pp_hash=$("$NVCC" -E -arch="$arch_val" "${include_flags[@]}" "$src_file" 2>/dev/null \
