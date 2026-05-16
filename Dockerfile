@@ -8,16 +8,20 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     && apt-get update && apt-get install -y --no-install-recommends \
         cmake ninja-build ccache ca-certificates curl gcc g++
 ENV CMAKE_GENERATOR=Ninja
+ENV CMAKE_C_COMPILER_LAUNCHER=ccache
+ENV CMAKE_CXX_COMPILER_LAUNCHER=ccache
 
 WORKDIR /build
 COPY CMakeLists.txt CMakePresets.json ./
 COPY ml/backend/ggml/ggml ml/backend/ggml/ggml
 
-RUN cmake --preset CPU \
+RUN --mount=type=cache,target=/root/.cache/ccache \
+    cmake --preset CPU \
     && cmake --build --preset CPU -j$(nproc) \
     && cmake --install build --component CPU --strip
 
-RUN cmake --preset 'CUDA 13' \
+RUN --mount=type=cache,target=/root/.cache/ccache \
+    cmake --preset 'CUDA 13' \
     && cmake --build --preset 'CUDA 13' -j$(nproc) \
     && cmake --install build --component CUDA --strip
 
@@ -27,10 +31,14 @@ ARG GO_VERSION=1.26.0
 ADD --unpack "https://golang.org/dl/go${GO_VERSION}.linux-amd64.tar.gz" /usr/local/
 ENV PATH=/usr/local/go/bin:$PATH
 
-RUN go mod download
+RUN --mount=type=cache,target=/root/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    go mod download
 COPY . .
 ENV CGO_ENABLED=1
-RUN go build -trimpath -buildmode=pie -ldflags='-w -s' -o /bin/ollama .
+RUN --mount=type=cache,target=/root/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    go build -trimpath -buildmode=pie -ldflags='-w -s' -o /bin/ollama .
 
 FROM nvidia/cuda:13.0.0-runtime-ubuntu24.04
 
