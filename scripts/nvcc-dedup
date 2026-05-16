@@ -1,15 +1,12 @@
 #!/bin/bash
 #
-# nvcc compilation cache that deduplicates identical virtual architectures.
+# nvcc wrapper that deduplicates identical virtual CUDA architectures.
 #
-# For each nvcc invocation with multiple -gencode flags, this wrapper:
-# 1. Preprocesses the source for each virtual arch and hashes the output
-# 2. Builds a cache key from the unique set of preprocessed hashes
-# 3. On cache hit: copies the cached object file directly (skips nvcc)
-# 4. On cache miss: compiles with only the unique arches, caches the result
-#
-# SASS arches (code=sm_*) are never deduplicated — they produce
-# architecture-specific machine code even from identical source.
+# When cmake invokes nvcc with multiple --generate-code flags, this
+# wrapper preprocesses the source for each virtual arch, hashes the
+# output (with digits stripped so arch-specific literals don't affect
+# the hash), and compiles only unique arches. SASS arches are always
+# kept since they produce architecture-specific machine code.
 #
 # Set CMAKE_CUDA_COMPILER_LAUNCHER to this script.
 
@@ -30,41 +27,33 @@ log() {
 CACHE_DIR="${NVCC_DEDUP_CACHE_DIR:-/tmp/nvcc-dedup-cache}"
 mkdir -p "$CACHE_DIR"
 
-# Find the output file (-o flag) and source file (.cu).
 output_file=""
 src_file=""
 prev=""
-include_flags=()
+preprocess_flags=()
 for arg in "$@"; do
-    if [ "$prev" = "-o" ]; then
-        output_file="$arg"
-    fi
+    [ "$prev" = "-o" ] && output_file="$arg"
     case "$arg" in
         *.cu) src_file="$arg" ;;
-        -I*|-isystem*|--include-path*|-D*|-std*|-x|-forward-unknown-to-host-compiler) include_flags+=("$arg") ;;
-        cu) [ "$prev" = "-x" ] && include_flags+=("$arg") ;;
+        -I*|-isystem*|--include-path*|-D*|-std*|-x|-forward-unknown-to-host-compiler) preprocess_flags+=("$arg") ;;
+        cu) [ "$prev" = "-x" ] && preprocess_flags+=("$arg") ;;
     esac
     prev="$arg"
 done
 
-# If no output or source, or <= 1 gencode, just pass through.
 gencode_count=0
 for arg in "$@"; do
     case "$arg" in -gencode*|--generate-code*) gencode_count=$((gencode_count + 1));; esac
 done
+
 if [ -z "$output_file" ] || [ -z "$src_file" ] || [ ! -f "$src_file" ] || [ "$gencode_count" -le 1 ]; then
     exec "$NVCC" "$@"
 fi
 
-log "Processing $(basename "$src_file") with $gencode_count gencode flags"
-for arg in "$@"; do
-    case "$arg" in -gencode*|--generate-code*) log "  arg: '$arg'"; break;; esac
-done
 t_start=$SECONDS
 
-# Preprocess each virtual arch, hash the output, group by hash.
-declare -A hash_to_first_arch  # hash -> first -gencode flag with this hash
-declare -A arch_hashes         # -gencode flag -> hash
+declare -A hash_to_first_arch
+declare -A arch_hashes
 sass_gencodes=()
 virtual_gencodes=()
 
@@ -73,8 +62,6 @@ for arg in "$@"; do
         -gencode=*|--generate-code=*)
             gencode="${arg#*=}"
 
-            # Detect virtual: check if compute_ appears in the code= value.
-            # Handles all cmake formats: code=compute_75, code=[compute_75,sm_75], etc.
             if [[ "$gencode" != *code=*compute_* ]]; then
                 sass_gencodes+=("$arg")
                 continue
@@ -85,12 +72,7 @@ for arg in "$@"; do
             [[ "$gencode" =~ arch=(compute_[a-z0-9]+) ]] && arch_val="${BASH_REMATCH[1]}"
 
             if [ -n "$arch_val" ]; then
-                # Replace all CUDA arch values in preprocessed output with 0.
-                # __CUDA_ARCH__ and __CUDA_ARCH_LIST__ expand to arch-specific
-                # numbers (750, 800, 1030, etc.) that differ across arches even
-                # when the code paths are identical. Replace any 3-4 digit number
-                # that could be an arch value so equivalent arches hash the same.
-                pp_hash=$("$NVCC" -E -arch="$arch_val" "${include_flags[@]}" "$src_file" 2>/dev/null \
+                pp_hash=$("$NVCC" -E -arch="$arch_val" "${preprocess_flags[@]}" "$src_file" 2>/dev/null \
                     | grep -v '^#' \
                     | tr -d '0-9' \
                     | md5sum | cut -d' ' -f1) || pp_hash="$arg"
@@ -103,7 +85,6 @@ for arg in "$@"; do
     esac
 done
 
-# Build the set of unique virtual gencodes.
 unique_gencodes=()
 for arg in "${virtual_gencodes[@]}"; do
     h="${arch_hashes[$arg]}"
@@ -116,30 +97,8 @@ t_preprocess=$((SECONDS - t_start))
 n_virtual=${#virtual_gencodes[@]}
 n_unique=${#unique_gencodes[@]}
 n_sass=${#sass_gencodes[@]}
-log "  preprocessed in ${t_preprocess}s: ${n_virtual} virtual -> ${n_unique} unique, ${n_sass} sass"
+log "$(basename "$src_file"): ${t_preprocess}s preprocess, ${n_virtual} virtual -> ${n_unique} unique, ${n_sass} sass"
 
-# One-time: dump diff between first two arches to diagnose why they hash differently
-if [ "$n_unique" -eq "$n_virtual" ] && [ "$n_virtual" -ge 2 ] && [ ! -f /tmp/nvcc-dedup-diffed ]; then
-    touch /tmp/nvcc-dedup-diffed
-    a1="${virtual_gencodes[1]}"
-    a2="${virtual_gencodes[2]}"
-    g1="${a1#*=}"; av1=""; [[ "$g1" =~ arch=(compute_[a-z0-9]+) ]] && av1="${BASH_REMATCH[1]}"
-    g2="${a2#*=}"; av2=""; [[ "$g2" =~ arch=(compute_[a-z0-9]+) ]] && av2="${BASH_REMATCH[1]}"
-    n1="${av1#compute_}"; n2="${av2#compute_}"
-    "$NVCC" -E -arch="$av1" "${include_flags[@]}" "$src_file" > /tmp/pp1_raw.txt 2>/tmp/pp1_err.txt || true
-    grep -v '^#' /tmp/pp1_raw.txt | tr -d '0-9' > /tmp/pp1.txt
-    "$NVCC" -E -arch="$av2" "${include_flags[@]}" "$src_file" > /tmp/pp2_raw.txt 2>/tmp/pp2_err.txt || true
-    grep -v '^#' /tmp/pp2_raw.txt | tr -d '0-9' > /tmp/pp2.txt
-    log "  nvcc -E stderr: $(head -3 /tmp/pp1_err.txt | tr '\n' '|')"
-    log "  nvcc -E raw lines: $(wc -l < /tmp/pp1_raw.txt)"
-    ndiff=$(diff /tmp/pp1.txt /tmp/pp2.txt 2>&1 | wc -l || echo 0)
-    sample=$(diff /tmp/pp1.txt /tmp/pp2.txt 2>&1 | grep '^[<>]' | head -3 | tr '\n' '|' || true)
-    log "  DIFF $av1 vs $av2: $ndiff lines differ, sample: $sample"
-    log "  pp1 lines: $(wc -l < /tmp/pp1.txt), pp2 lines: $(wc -l < /tmp/pp2.txt)"
-    log "  pp1 hash: $(md5sum /tmp/pp1.txt | cut -d' ' -f1), pp2 hash: $(md5sum /tmp/pp2.txt | cut -d' ' -f1)"
-fi
-
-# Cache key: hash of (all non-gencode flags + unique gencode set + source hash).
 src_hash=$(md5sum "$src_file" | cut -d' ' -f1)
 flags_for_key=""
 for arg in "$@"; do
@@ -151,32 +110,21 @@ done
 cache_key=$(printf '%s\n%s' "$flags_for_key" "$src_hash" | md5sum | cut -d' ' -f1)
 cached="$CACHE_DIR/$cache_key.o"
 
-# Cache hit: copy cached object file.
 if [ -f "$cached" ]; then
-    log "  CACHE HIT -> $output_file"
+    log "  cache hit"
     cp "$cached" "$output_file"
     exit 0
 fi
 
-# Cache miss: compile with only unique arches + all SASS arches.
 new_args=()
 for arg in "$@"; do
-    case "$arg" in
-        -gencode=*|--generate-code=*)
-            ;;
-        *)
-            new_args+=("$arg")
-            ;;
-    esac
+    case "$arg" in -gencode=*|--generate-code=*) ;; *) new_args+=("$arg") ;; esac
 done
 new_args+=("${unique_gencodes[@]}" "${sass_gencodes[@]}")
 
 t_compile_start=$SECONDS
 "$NVCC" "${new_args[@]}"
 t_compile=$((SECONDS - t_compile_start))
-log "  compiled in ${t_compile}s (${n_unique} arches instead of ${n_virtual})"
+log "  compiled ${t_compile}s (${n_unique}/${n_virtual} arches)"
 
-# Cache the result.
-if [ -f "$output_file" ]; then
-    cp "$output_file" "$cached"
-fi
+[ -f "$output_file" ] && cp "$output_file" "$cached"
