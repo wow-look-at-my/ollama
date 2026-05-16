@@ -33,6 +33,18 @@ if [ ! -f /tmp/cicc-cache-logged ]; then
     log "args: $*"
 fi
 
+# One-time: save compute_80 input, then diff against compute_89
+if [[ "$input_file" == *compute_80.cpp1.ii ]] && [ ! -f /tmp/cicc-cache-saved80 ]; then
+    cp "$input_file" /tmp/cicc-cache-saved80
+fi
+if [[ "$input_file" == *compute_89.cpp1.ii ]] && [ -f /tmp/cicc-cache-saved80 ] && [ ! -f /tmp/cicc-cache-diffed ]; then
+    touch /tmp/cicc-cache-diffed
+    ndiff=$(diff /tmp/cicc-cache-saved80 "$input_file" 2>&1 | wc -l || echo 0)
+    sample=$(diff /tmp/cicc-cache-saved80 "$input_file" 2>&1 | grep '^[<>]' | head -5 | tr '\n' '|' || true)
+    log "DIFF compute_80 vs compute_89 cpp1.ii: $ndiff lines differ"
+    log "DIFF sample: $sample"
+fi
+
 for arg in "$@"; do
     case "$prev" in
         -o|--gen_c_file_name|--stub_file_name|--gen_device_file_name|--module_id_file_name)
