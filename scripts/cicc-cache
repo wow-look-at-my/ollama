@@ -1,8 +1,8 @@
 #!/bin/bash
 #
 # cicc wrapper that caches device compiler output by input content hash.
-# Caches ALL output files cicc produces (PTX, stub files, etc.), not
-# just the -o target.
+# Parses the command line to identify all input and output files.
+# Parallel-safe: no filesystem diffing.
 #
 # Install by replacing cicc with this wrapper:
 #   mv /usr/local/cuda/nvvm/bin/cicc /usr/local/cuda/nvvm/bin/cicc.real
@@ -14,44 +14,36 @@ REAL_CICC="${0}.real"
 CACHE_DIR="${CICC_CACHE_DIR:-/tmp/cicc-cache}"
 mkdir -p "$CACHE_DIR"
 
-# Parse args: find input file and output file.
 input_file=""
-output_file=""
+output_files=()
 prev=""
 for arg in "$@"; do
-    [ "$prev" = "-o" ] && output_file="$arg"
+    case "$prev" in
+        -o|--gen_c_file_name|--stub_file_name|--gen_device_file_name|--module_id_file_name)
+            output_files+=("$arg") ;;
+    esac
     case "$arg" in *.cpp1.ii|*.cpp4.ii) input_file="$arg" ;; esac
     prev="$arg"
 done
 
-if [ -z "$input_file" ] || [ -z "$output_file" ] || [ ! -f "$input_file" ]; then
+if [ -z "$input_file" ] || [ ! -f "$input_file" ] || [ ${#output_files[@]} -eq 0 ]; then
     exec "$REAL_CICC" "$@"
 fi
 
 input_hash=$(md5sum "$input_file" | cut -d' ' -f1)
 cache_entry="$CACHE_DIR/$input_hash"
 
-# Cache hit: restore all files from the cached entry.
 if [ -d "$cache_entry" ]; then
-    cp "$cache_entry"/* "$(dirname "$output_file")/" 2>/dev/null || true
+    for f in "${output_files[@]}"; do
+        cached="$cache_entry/$(basename "$f")"
+        [ -f "$cached" ] && cp "$cached" "$f"
+    done
     exit 0
 fi
 
-# Snapshot files before cicc runs.
-out_dir=$(dirname "$output_file")
-before=$(mktemp)
-ls -1 "$out_dir" 2>/dev/null | sort > "$before"
-
 "$REAL_CICC" "$@"
 
-# Find new files produced by cicc and cache them all.
-after=$(mktemp)
-ls -1 "$out_dir" 2>/dev/null | sort > "$after"
-new_files=$(comm -13 "$before" "$after")
-rm -f "$before" "$after"
-
 mkdir -p "$cache_entry"
-for f in $new_files; do
-    cp "$out_dir/$f" "$cache_entry/" 2>/dev/null || true
+for f in "${output_files[@]}"; do
+    [ -f "$f" ] && cp "$f" "$cache_entry/"
 done
-[ -f "$output_file" ] && cp "$output_file" "$cache_entry/"
