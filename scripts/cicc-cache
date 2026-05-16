@@ -1,0 +1,49 @@
+#!/bin/bash
+#
+# cicc wrapper that caches device compiler output by input content hash.
+#
+# nvcc calls cicc (the device compiler) separately for each CUDA
+# architecture. For arches with identical preprocessed device code,
+# cicc produces identical PTX — so we cache by input file hash and
+# return cached PTX on hit.
+#
+# Install by replacing cicc with this wrapper:
+#   mv /usr/local/cuda/nvvm/bin/cicc /usr/local/cuda/nvvm/bin/cicc.real
+#   cp scripts/cicc-cache /usr/local/cuda/nvvm/bin/cicc
+
+set -euo pipefail
+
+REAL_CICC="${0}.real"
+CACHE_DIR="${CICC_CACHE_DIR:-/tmp/cicc-cache}"
+mkdir -p "$CACHE_DIR"
+
+# Parse args: find input file and output file.
+input_file=""
+output_file=""
+prev=""
+for arg in "$@"; do
+    if [ "$prev" = "-o" ]; then
+        output_file="$arg"
+    fi
+    case "$arg" in
+        *.cpp1.ii|*.cpp4.ii) input_file="$arg" ;;
+    esac
+    prev="$arg"
+done
+
+if [ -z "$input_file" ] || [ -z "$output_file" ] || [ ! -f "$input_file" ]; then
+    exec "$REAL_CICC" "$@"
+fi
+
+# Hash the input file content — identical device code produces identical PTX.
+input_hash=$(md5sum "$input_file" | cut -d' ' -f1)
+cached="$CACHE_DIR/$input_hash.ptx"
+
+if [ -f "$cached" ]; then
+    cp "$cached" "$output_file"
+    exit 0
+fi
+
+"$REAL_CICC" "$@"
+
+[ -f "$output_file" ] && cp "$output_file" "$cached"

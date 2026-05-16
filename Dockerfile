@@ -21,10 +21,12 @@ RUN --mount=type=cache,target=/root/.cache/ccache \
     && cmake --build --preset CPU -j$(nproc) \
     && cmake --install build --component CPU --strip
 
-COPY scripts/nvcc-dedup /usr/local/bin/nvcc-dedup
+COPY scripts/cicc-cache /usr/local/cuda/nvvm/bin/cicc-cache
+RUN mv /usr/local/cuda/nvvm/bin/cicc /usr/local/cuda/nvvm/bin/cicc.real \
+    && mv /usr/local/cuda/nvvm/bin/cicc-cache /usr/local/cuda/nvvm/bin/cicc
 
 RUN --mount=type=cache,target=/root/.cache/ccache \
-    cmake --preset 'CUDA 13' -DCMAKE_CUDA_COMPILER_LAUNCHER=/usr/local/bin/nvcc-dedup \
+    cmake --preset 'CUDA 13' -DCMAKE_CUDA_COMPILER_LAUNCHER=ccache \
     && cmake --build --preset 'CUDA 13' -j$(nproc) \
     && cmake --install build --component CUDA --strip
 
