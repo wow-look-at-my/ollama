@@ -11,8 +11,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 ENV CMAKE_GENERATOR=Ninja
 ENV CMAKE_C_COMPILER_LAUNCHER=ccache
 ENV CMAKE_CXX_COMPILER_LAUNCHER=ccache
-COPY scripts/nvcc-dedup /usr/local/bin/nvcc-dedup
-ENV CMAKE_CUDA_COMPILER_LAUNCHER=/usr/local/bin/nvcc-dedup
+ENV CMAKE_CUDA_COMPILER_LAUNCHER=ccache
 
 WORKDIR /build
 COPY CMakeLists.txt CMakePresets.json ./
@@ -24,7 +23,7 @@ RUN --mount=type=cache,target=/root/.cache/ccache \
     && cmake --install build --component CPU --strip
 
 RUN --mount=type=cache,target=/root/.cache/ccache \
-    cmake --preset 'CUDA 13' \
+    cmake --preset 'CUDA 13' -DCMAKE_CUDA_ARCHITECTURES="75-virtual;80-virtual" \
     && cmake --build --preset 'CUDA 13' -j$(nproc) \
     && cmake --install build --component CUDA --strip
 
