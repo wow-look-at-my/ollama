@@ -21,10 +21,10 @@ shift
 OTEL_ENDPOINT="${OTEL_ENDPOINT:-https://otel.pazer.tube/v1/logs}"
 log() {
     echo "[nvcc-dedup] $*" >&2
-    curl -s -X POST "$OTEL_ENDPOINT" \
-        -H 'Content-Type: application/json' \
-        -d "{\"resourceLogs\":[{\"resource\":{\"attributes\":[{\"key\":\"service.name\",\"value\":{\"stringValue\":\"nvcc-dedup\"}}]},\"scopeLogs\":[{\"scope\":{\"name\":\"nvcc-dedup\"},\"logRecords\":[{\"body\":{\"stringValue\":\"$*\"},\"timeUnixNano\":\"$(date +%s)000000000\",\"severityText\":\"INFO\"}]}]}]}" \
-        >/dev/null 2>&1 || true
+    local payload
+    payload=$(jq -nc --arg msg "$*" --arg ts "$(date +%s)000000000" \
+        '{resourceLogs:[{resource:{attributes:[{key:"service.name",value:{stringValue:"nvcc-dedup"}}]},scopeLogs:[{scope:{name:"nvcc-dedup"},logRecords:[{body:{stringValue:$msg},timeUnixNano:$ts,severityText:"INFO"}]}]}]}')
+    curl -s -X POST "$OTEL_ENDPOINT" -H 'Content-Type: application/json' -d "$payload" >/dev/null 2>&1 || true
 }
 
 CACHE_DIR="${NVCC_DEDUP_CACHE_DIR:-/tmp/nvcc-dedup-cache}"
