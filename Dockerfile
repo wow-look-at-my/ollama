@@ -34,7 +34,7 @@ RUN go build -trimpath -buildmode=pie -ldflags='-w -s' -o /bin/ollama .
 FROM nvidia/cuda:13.0.0-runtime-ubuntu24.04
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates \
+    && apt-get install -y --no-install-recommends ca-certificates curl \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=build /bin/ollama /usr/bin/ollama
