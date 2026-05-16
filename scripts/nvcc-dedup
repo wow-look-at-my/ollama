@@ -15,6 +15,10 @@ set -euo pipefail
 NVCC="$1"
 shift
 
+# Chain ccache for the actual compilation.
+CCACHE=""
+command -v ccache >/dev/null 2>&1 && CCACHE="ccache"
+
 OTEL_ENDPOINT="${OTEL_ENDPOINT:-https://otel.pazer.tube/v1/logs}"
 log() {
     echo "[nvcc-dedup] $*" >&2
@@ -47,7 +51,7 @@ for arg in "$@"; do
 done
 
 if [ -z "$output_file" ] || [ -z "$src_file" ] || [ ! -f "$src_file" ] || [ "$gencode_count" -le 1 ]; then
-    exec "$NVCC" "$@"
+    exec $CCACHE "$NVCC" "$@"
 fi
 
 t_start=$SECONDS
@@ -123,7 +127,7 @@ done
 new_args+=("${unique_gencodes[@]}" "${sass_gencodes[@]}")
 
 t_compile_start=$SECONDS
-"$NVCC" "${new_args[@]}"
+$CCACHE "$NVCC" "${new_args[@]}"
 t_compile=$((SECONDS - t_compile_start))
 log "  compiled ${t_compile}s (${n_unique}/${n_virtual} arches)"
 
