@@ -85,17 +85,14 @@ for arg in "$@"; do
             [[ "$gencode" =~ arch=(compute_[a-z0-9]+) ]] && arch_val="${BASH_REMATCH[1]}"
 
             if [ -n "$arch_val" ]; then
-                # Compute the __CUDA_ARCH__ value: major*100 + minor*10
-                # e.g. compute_75 -> 750, compute_90a -> 900, compute_103 -> 1030
-                arch_num="${arch_val#compute_}"
-                arch_num_clean="${arch_num%%[a-z]*}"  # strip suffix like 'a'
-                cuda_arch_val=$((arch_num_clean * 10))
-
-                # Replace __CUDA_ARCH__ and __CUDA_ARCH_LIST__ values with 0
-                # using word-boundary matching to avoid mangling unrelated numbers
+                # Replace all CUDA arch values in preprocessed output with 0.
+                # __CUDA_ARCH__ and __CUDA_ARCH_LIST__ expand to arch-specific
+                # numbers (750, 800, 1030, etc.) that differ across arches even
+                # when the code paths are identical. Replace any 3-4 digit number
+                # that could be an arch value so equivalent arches hash the same.
                 pp_hash=$("$NVCC" -E -arch="$arch_val" "${include_flags[@]}" "$src_file" 2>/dev/null \
                     | grep -v '^#' \
-                    | sed "s/\b${cuda_arch_val}\b/0/g" \
+                    | sed -E 's/(^|[^0-9])[0-9]{3,4}([^0-9]|$)/\10\2/g' \
                     | md5sum | cut -d' ' -f1) || pp_hash="$arg"
                 arch_hashes["$arg"]="$pp_hash"
                 if [ -z "${hash_to_first_arch[$pp_hash]+x}" ]; then
@@ -130,9 +127,9 @@ if [ "$n_unique" -eq "$n_virtual" ] && [ "$n_virtual" -ge 2 ] && [ ! -f /tmp/nvc
     g2="${a2#*=}"; av2=""; [[ "$g2" =~ arch=(compute_[a-z0-9]+) ]] && av2="${BASH_REMATCH[1]}"
     n1="${av1#compute_}"; n2="${av2#compute_}"
     "$NVCC" -E -arch="$av1" "${include_flags[@]}" "$src_file" > /tmp/pp1_raw.txt 2>/tmp/pp1_err.txt || true
-    grep -v '^#' /tmp/pp1_raw.txt | sed "s/\b${n1}0\b/0/g" > /tmp/pp1.txt
+    grep -v '^#' /tmp/pp1_raw.txt | sed -E 's/(^|[^0-9])[0-9]{3,4}([^0-9]|$)/\10\2/g' > /tmp/pp1.txt
     "$NVCC" -E -arch="$av2" "${include_flags[@]}" "$src_file" > /tmp/pp2_raw.txt 2>/tmp/pp2_err.txt || true
-    grep -v '^#' /tmp/pp2_raw.txt | sed "s/\b${n2}0\b/0/g" > /tmp/pp2.txt
+    grep -v '^#' /tmp/pp2_raw.txt | sed -E 's/(^|[^0-9])[0-9]{3,4}([^0-9]|$)/\10\2/g' > /tmp/pp2.txt
     log "  nvcc -E stderr: $(head -3 /tmp/pp1_err.txt | tr '\n' '|')"
     log "  nvcc -E raw lines: $(wc -l < /tmp/pp1_raw.txt)"
     ndiff=$(diff /tmp/pp1.txt /tmp/pp2.txt 2>&1 | wc -l || echo 0)
