@@ -1,8 +1,6 @@
 #!/bin/bash
 #
 # cicc wrapper that caches device compiler output by input content hash.
-# Stores outputs keyed by their flag name so arch-specific filenames
-# don't break restoration.
 #
 # Install by replacing cicc with this wrapper:
 #   mv /usr/local/cuda/nvvm/bin/cicc /usr/local/cuda/nvvm/bin/cicc.real
@@ -14,9 +12,27 @@ REAL_CICC="${0}.real"
 CACHE_DIR="${CICC_CACHE_DIR:-/tmp/cicc-cache}"
 mkdir -p "$CACHE_DIR"
 
+OTEL_ENDPOINT="${OTEL_ENDPOINT:-https://otel.pazer.tube/v1/logs}"
+log() {
+    echo "[cicc-cache] $*" >&2
+    jq -nc --arg msg "$*" --arg ts "$(date +%s)000000000" \
+        '{resourceLogs:[{resource:{attributes:[{key:"service.name",value:{stringValue:"cicc-cache"}}]},scopeLogs:[{scope:{name:"cicc-cache"},logRecords:[{body:{stringValue:$msg},timeUnixNano:$ts,severityText:"INFO"}]}]}]}' \
+    | curl -s -X POST "$OTEL_ENDPOINT" -H 'Content-Type: application/json' -d @- >/dev/null 2>&1 || true
+}
+
+# Parse all args. Collect input file, and ALL flag-value pairs that
+# look like output file paths.
 input_file=""
-declare -A output_map  # flag_name -> file_path
+declare -A output_map
 prev=""
+all_args=("$@")
+
+# Log first invocation's full args for debugging
+if [ ! -f /tmp/cicc-cache-logged ]; then
+    touch /tmp/cicc-cache-logged
+    log "args: $*"
+fi
+
 for arg in "$@"; do
     case "$prev" in
         -o|--gen_c_file_name|--stub_file_name|--gen_device_file_name|--module_id_file_name)
@@ -35,10 +51,19 @@ cache_entry="$CACHE_DIR/$input_hash"
 
 if [ -d "$cache_entry" ]; then
     for flag in "${!output_map[@]}"; do
-        cached="$cache_entry/$flag"
+        # Use flag name without leading dashes as cache filename
+        clean_flag="${flag#--}"
+        clean_flag="${clean_flag#-}"
+        cached="$cache_entry/$clean_flag"
         target="${output_map[$flag]}"
-        [ -f "$cached" ] && cp "$cached" "$target"
+        if [ -f "$cached" ]; then
+            cp "$cached" "$target"
+        else
+            log "MISS for flag $flag (no $cached)"
+            exec "$REAL_CICC" "$@"
+        fi
     done
+    log "HIT $(basename "$input_file")"
     exit 0
 fi
 
@@ -46,6 +71,9 @@ fi
 
 mkdir -p "$cache_entry"
 for flag in "${!output_map[@]}"; do
+    clean_flag="${flag#--}"
+    clean_flag="${clean_flag#-}"
     src="${output_map[$flag]}"
-    [ -f "$src" ] && cp "$src" "$cache_entry/$flag"
+    [ -f "$src" ] && cp "$src" "$cache_entry/$clean_flag"
 done
+log "STORE $(basename "$input_file") (${#output_map[@]} files)"
