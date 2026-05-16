@@ -11,6 +11,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 ENV CMAKE_GENERATOR=Ninja
 ENV CMAKE_C_COMPILER_LAUNCHER=ccache
 ENV CMAKE_CXX_COMPILER_LAUNCHER=ccache
+ENV CMAKE_CUDA_COMPILER_LAUNCHER=ccache
 
 WORKDIR /build
 COPY CMakeLists.txt CMakePresets.json ./
