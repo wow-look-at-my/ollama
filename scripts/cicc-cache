@@ -1,8 +1,8 @@
 #!/bin/bash
 #
 # cicc wrapper that caches device compiler output by input content hash.
-# Parses the command line to identify all input and output files.
-# Parallel-safe: no filesystem diffing.
+# Stores outputs keyed by their flag name so arch-specific filenames
+# don't break restoration.
 #
 # Install by replacing cicc with this wrapper:
 #   mv /usr/local/cuda/nvvm/bin/cicc /usr/local/cuda/nvvm/bin/cicc.real
@@ -15,18 +15,18 @@ CACHE_DIR="${CICC_CACHE_DIR:-/tmp/cicc-cache}"
 mkdir -p "$CACHE_DIR"
 
 input_file=""
-output_files=()
+declare -A output_map  # flag_name -> file_path
 prev=""
 for arg in "$@"; do
     case "$prev" in
         -o|--gen_c_file_name|--stub_file_name|--gen_device_file_name|--module_id_file_name)
-            output_files+=("$arg") ;;
+            output_map["$prev"]="$arg" ;;
     esac
     case "$arg" in *.cpp1.ii|*.cpp4.ii) input_file="$arg" ;; esac
     prev="$arg"
 done
 
-if [ -z "$input_file" ] || [ ! -f "$input_file" ] || [ ${#output_files[@]} -eq 0 ]; then
+if [ -z "$input_file" ] || [ ! -f "$input_file" ] || [ ${#output_map[@]} -eq 0 ]; then
     exec "$REAL_CICC" "$@"
 fi
 
@@ -34,9 +34,10 @@ input_hash=$(md5sum "$input_file" | cut -d' ' -f1)
 cache_entry="$CACHE_DIR/$input_hash"
 
 if [ -d "$cache_entry" ]; then
-    for f in "${output_files[@]}"; do
-        cached="$cache_entry/$(basename "$f")"
-        [ -f "$cached" ] && cp "$cached" "$f"
+    for flag in "${!output_map[@]}"; do
+        cached="$cache_entry/$flag"
+        target="${output_map[$flag]}"
+        [ -f "$cached" ] && cp "$cached" "$target"
     done
     exit 0
 fi
@@ -44,6 +45,7 @@ fi
 "$REAL_CICC" "$@"
 
 mkdir -p "$cache_entry"
-for f in "${output_files[@]}"; do
-    [ -f "$f" ] && cp "$f" "$cache_entry/"
+for flag in "${!output_map[@]}"; do
+    src="${output_map[$flag]}"
+    [ -f "$src" ] && cp "$src" "$cache_entry/$flag"
 done
