@@ -4,7 +4,8 @@ FROM nvidia/cuda:13.0.0-devel-ubuntu24.04 AS build
 
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
-    apt-get update && apt-get install -y --no-install-recommends \
+    rm -f /etc/apt/apt.conf.d/docker-clean \
+    && apt-get update && apt-get install -y --no-install-recommends \
         cmake ninja-build ccache ca-certificates curl gcc g++
 ENV CMAKE_GENERATOR=Ninja
 
@@ -36,7 +37,8 @@ FROM nvidia/cuda:13.0.0-runtime-ubuntu24.04
 
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
-    apt-get update && apt-get install -y --no-install-recommends ca-certificates curl
+    rm -f /etc/apt/apt.conf.d/docker-clean \
+    && apt-get update && apt-get install -y --no-install-recommends ca-certificates curl
 
 COPY --from=build /bin/ollama /usr/bin/ollama
 COPY --from=build /build/dist/lib/ollama /usr/lib/ollama
