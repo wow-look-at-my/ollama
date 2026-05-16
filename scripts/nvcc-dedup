@@ -130,8 +130,11 @@ if [ "$n_unique" -eq "$n_virtual" ] && [ "$n_virtual" -ge 2 ] && [ ! -f /tmp/nvc
     n1="${av1#compute_}"; n2="${av2#compute_}"
     "$NVCC" -E -arch="$av1" "${include_flags[@]}" "$src_file" 2>/dev/null | grep -v '^#' | sed "s/${n1}/0/g" > /tmp/pp1.txt || true
     "$NVCC" -E -arch="$av2" "${include_flags[@]}" "$src_file" 2>/dev/null | grep -v '^#' | sed "s/${n2}/0/g" > /tmp/pp2.txt || true
-    difflines=$(diff /tmp/pp1.txt /tmp/pp2.txt 2>&1 | head -20 || true)
-    log "  DIFF between $av1 and $av2: $difflines"
+    ndiff=$(diff /tmp/pp1.txt /tmp/pp2.txt 2>&1 | wc -l || echo 0)
+    sample=$(diff /tmp/pp1.txt /tmp/pp2.txt 2>&1 | grep '^[<>]' | head -3 | tr '\n' '|' || true)
+    log "  DIFF $av1 vs $av2: $ndiff lines differ, sample: $sample"
+    log "  pp1 lines: $(wc -l < /tmp/pp1.txt), pp2 lines: $(wc -l < /tmp/pp2.txt)"
+    log "  pp1 hash: $(md5sum /tmp/pp1.txt | cut -d' ' -f1), pp2 hash: $(md5sum /tmp/pp2.txt | cut -d' ' -f1)"
 fi
 
 # Cache key: hash of (all non-gencode flags + unique gencode set + source hash).
