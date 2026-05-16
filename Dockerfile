@@ -24,8 +24,7 @@ RUN cmake --preset 'CUDA 13' \
 WORKDIR /build/ollama
 COPY go.mod go.sum ./
 ARG GO_VERSION=1.26.0
-ADD "https://golang.org/dl/go${GO_VERSION}.linux-amd64.tar.gz" /tmp/go.tar.gz
-RUN tar xz -C /usr/local < /tmp/go.tar.gz && rm /tmp/go.tar.gz
+ADD --unpack "https://golang.org/dl/go${GO_VERSION}.linux-amd64.tar.gz" /usr/local/
 ENV PATH=/usr/local/go/bin:$PATH
 
 RUN go mod download
