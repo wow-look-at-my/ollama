@@ -23,7 +23,7 @@ log() {
     echo "[nvcc-dedup] $*" >&2
     curl -s -X POST "$OTEL_ENDPOINT" \
         -H 'Content-Type: application/json' \
-        -d "{\"resourceLogs\":[{\"scopeLogs\":[{\"logRecords\":[{\"body\":{\"stringValue\":\"[nvcc-dedup] $*\"},\"timeUnixNano\":\"$(date +%s)000000000\"}]}]}]}" \
+        -d "{\"resourceLogs\":[{\"resource\":{\"attributes\":[{\"key\":\"service.name\",\"value\":{\"stringValue\":\"nvcc-dedup\"}}]},\"scopeLogs\":[{\"scope\":{\"name\":\"nvcc-dedup\"},\"logRecords\":[{\"body\":{\"stringValue\":\"$*\"},\"timeUnixNano\":\"$(date +%s)000000000\",\"severityText\":\"INFO\"}]}]}]}" \
         >/dev/null 2>&1 || true
 }
 
