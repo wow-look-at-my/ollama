@@ -11,17 +11,17 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 ENV CMAKE_GENERATOR=Ninja
 ENV CMAKE_C_COMPILER_LAUNCHER=ccache
 ENV CMAKE_CXX_COMPILER_LAUNCHER=ccache
-COPY scripts/nvcc-dedup /usr/local/bin/nvcc-dedup
-ENV CMAKE_CUDA_COMPILER_LAUNCHER=/usr/local/bin/nvcc-dedup
 
 WORKDIR /build
 COPY CMakeLists.txt CMakePresets.json ./
 COPY ml/backend/ggml/ggml ml/backend/ggml/ggml
 
 RUN --mount=type=cache,target=/root/.cache/ccache \
-    cmake --preset CPU -DCMAKE_CUDA_COMPILER_LAUNCHER=/usr/local/bin/nvcc-dedup \
+    cmake --preset CPU \
     && cmake --build --preset CPU -j$(nproc) \
     && cmake --install build --component CPU --strip
+
+COPY scripts/nvcc-dedup /usr/local/bin/nvcc-dedup
 
 RUN --mount=type=cache,target=/root/.cache/ccache \
     cmake --preset 'CUDA 13' -DCMAKE_CUDA_COMPILER_LAUNCHER=/usr/local/bin/nvcc-dedup \
