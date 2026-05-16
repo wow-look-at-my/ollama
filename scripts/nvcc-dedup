@@ -1,12 +1,8 @@
 #!/bin/bash
 #
-# nvcc wrapper that deduplicates identical virtual CUDA architectures.
-#
-# When cmake invokes nvcc with multiple --generate-code flags, this
-# wrapper preprocesses the source for each virtual arch, hashes the
-# output (with digits stripped so arch-specific literals don't affect
-# the hash), and compiles only unique arches. SASS arches are always
-# kept since they produce architecture-specific machine code.
+# Compilation cache wrapper for nvcc. Preprocesses the source using the
+# real compiler with the real flags, hashes the result, and returns a
+# cached object file on hit. On miss, compiles and caches the output.
 #
 # Set CMAKE_CUDA_COMPILER_LAUNCHER to this script.
 
@@ -15,120 +11,53 @@ set -euo pipefail
 NVCC="$1"
 shift
 
-# Chain ccache for the actual compilation.
-CCACHE=""
-command -v ccache >/dev/null 2>&1 && CCACHE="ccache"
+CACHE_DIR="${NVCC_DEDUP_CACHE_DIR:-/tmp/nvcc-dedup-cache}"
+mkdir -p "$CACHE_DIR"
 
 OTEL_ENDPOINT="${OTEL_ENDPOINT:-https://otel.pazer.tube/v1/logs}"
 log() {
     echo "[nvcc-dedup] $*" >&2
-    local payload
-    payload=$(jq -nc --arg msg "$*" --arg ts "$(date +%s)000000000" \
-        '{resourceLogs:[{resource:{attributes:[{key:"service.name",value:{stringValue:"nvcc-dedup"}}]},scopeLogs:[{scope:{name:"nvcc-dedup"},logRecords:[{body:{stringValue:$msg},timeUnixNano:$ts,severityText:"INFO"}]}]}]}')
-    curl -s -X POST "$OTEL_ENDPOINT" -H 'Content-Type: application/json' -d "$payload" >/dev/null 2>&1 || true
+    jq -nc --arg msg "$*" --arg ts "$(date +%s)000000000" \
+        '{resourceLogs:[{resource:{attributes:[{key:"service.name",value:{stringValue:"nvcc-dedup"}}]},scopeLogs:[{scope:{name:"nvcc-dedup"},logRecords:[{body:{stringValue:$msg},timeUnixNano:$ts,severityText:"INFO"}]}]}]}' \
+    | curl -s -X POST "$OTEL_ENDPOINT" -H 'Content-Type: application/json' -d @- >/dev/null 2>&1 || true
 }
 
-CACHE_DIR="${NVCC_DEDUP_CACHE_DIR:-/tmp/nvcc-dedup-cache}"
-mkdir -p "$CACHE_DIR"
-
+# Find the source file and output file.
 output_file=""
 src_file=""
 prev=""
-preprocess_flags=()
 for arg in "$@"; do
     [ "$prev" = "-o" ] && output_file="$arg"
-    case "$arg" in
-        *.cu) src_file="$arg" ;;
-        -I*|-isystem*|--include-path*|-D*|-std*|-x|-forward-unknown-to-host-compiler) preprocess_flags+=("$arg") ;;
-        cu) [ "$prev" = "-x" ] && preprocess_flags+=("$arg") ;;
-    esac
+    case "$arg" in *.cu) src_file="$arg" ;; esac
     prev="$arg"
 done
 
-gencode_count=0
-for arg in "$@"; do
-    case "$arg" in -gencode*|--generate-code*) gencode_count=$((gencode_count + 1));; esac
-done
-
-if [ -z "$output_file" ] || [ -z "$src_file" ] || [ ! -f "$src_file" ] || [ "$gencode_count" -le 1 ]; then
-    exec $CCACHE "$NVCC" "$@"
+# No source or output → passthrough.
+if [ -z "$output_file" ] || [ -z "$src_file" ] || [ ! -f "$src_file" ]; then
+    exec "$NVCC" "$@"
 fi
 
+# Preprocess with the real compiler and real flags, hash the result.
 t_start=$SECONDS
+pp_hash=$("$NVCC" -E "$@" 2>/dev/null | md5sum | cut -d' ' -f1) || pp_hash=""
 
-declare -A hash_to_first_arch
-declare -A arch_hashes
-sass_gencodes=()
-virtual_gencodes=()
+if [ -z "$pp_hash" ]; then
+    log "$(basename "$src_file"): preprocess failed, compiling directly"
+    exec "$NVCC" "$@"
+fi
 
-for arg in "$@"; do
-    case "$arg" in
-        -gencode=*|--generate-code=*)
-            gencode="${arg#*=}"
-
-            if [[ "$gencode" != *code=*compute_* ]]; then
-                sass_gencodes+=("$arg")
-                continue
-            fi
-
-            virtual_gencodes+=("$arg")
-            arch_val=""
-            [[ "$gencode" =~ arch=(compute_[a-z0-9]+) ]] && arch_val="${BASH_REMATCH[1]}"
-
-            if [ -n "$arch_val" ]; then
-                pp_hash=$("$NVCC" -E -arch="$arch_val" "${preprocess_flags[@]}" "$src_file" 2>/dev/null \
-                    | grep -v '^#' \
-                    | tr -d '0-9' \
-                    | md5sum | cut -d' ' -f1) || pp_hash="$arg"
-                arch_hashes["$arg"]="$pp_hash"
-                if [ -z "${hash_to_first_arch[$pp_hash]+x}" ]; then
-                    hash_to_first_arch["$pp_hash"]="$arg"
-                fi
-            fi
-            ;;
-    esac
-done
-
-unique_gencodes=()
-for arg in "${virtual_gencodes[@]}"; do
-    h="${arch_hashes[$arg]}"
-    if [ "${hash_to_first_arch[$h]}" = "$arg" ]; then
-        unique_gencodes+=("$arg")
-    fi
-done
-
-t_preprocess=$((SECONDS - t_start))
-n_virtual=${#virtual_gencodes[@]}
-n_unique=${#unique_gencodes[@]}
-n_sass=${#sass_gencodes[@]}
-log "$(basename "$src_file"): ${t_preprocess}s preprocess, ${n_virtual} virtual -> ${n_unique} unique, ${n_sass} sass"
-
-src_hash=$(md5sum "$src_file" | cut -d' ' -f1)
-flags_for_key=""
-for arg in "$@"; do
-    case "$arg" in -gencode*|--generate-code*) ;; *) flags_for_key+="$arg ";; esac
-done
-for g in "${unique_gencodes[@]}" "${sass_gencodes[@]}"; do
-    flags_for_key+="$g "
-done
-cache_key=$(printf '%s\n%s' "$flags_for_key" "$src_hash" | md5sum | cut -d' ' -f1)
-cached="$CACHE_DIR/$cache_key.o"
+t_pp=$((SECONDS - t_start))
+cached="$CACHE_DIR/$pp_hash.o"
 
 if [ -f "$cached" ]; then
-    log "  cache hit"
     cp "$cached" "$output_file"
+    log "$(basename "$src_file"): cache hit (${t_pp}s preprocess)"
     exit 0
 fi
 
-new_args=()
-for arg in "$@"; do
-    case "$arg" in -gencode=*|--generate-code=*) ;; *) new_args+=("$arg") ;; esac
-done
-new_args+=("${unique_gencodes[@]}" "${sass_gencodes[@]}")
-
 t_compile_start=$SECONDS
-$CCACHE "$NVCC" "${new_args[@]}"
+"$NVCC" "$@"
 t_compile=$((SECONDS - t_compile_start))
-log "  compiled ${t_compile}s (${n_unique}/${n_virtual} arches)"
 
 [ -f "$output_file" ] && cp "$output_file" "$cached"
+log "$(basename "$src_file"): cache miss, compiled ${t_compile}s (${t_pp}s preprocess)"
