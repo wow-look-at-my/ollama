@@ -84,8 +84,14 @@ for arg in "$@"; do
             [[ "$gencode" =~ arch=(compute_[a-z0-9]+) ]] && arch_val="${BASH_REMATCH[1]}"
 
             if [ -n "$arch_val" ]; then
+                # Strip the arch-specific number from preprocessed output.
+                # __CUDA_ARCH__ expands to e.g. 800, __CUDA_ARCH_LIST__ to
+                # the single arch number when preprocessing individually.
+                # Replace that specific number so equivalent arches hash same.
+                arch_num="${arch_val#compute_}"
                 pp_hash=$("$NVCC" -E -arch="$arch_val" "${include_flags[@]}" "$src_file" 2>/dev/null \
                     | grep -v '^#' \
+                    | sed "s/${arch_num}/0/g" \
                     | md5sum | cut -d' ' -f1) || pp_hash="$arg"
                 arch_hashes["$arg"]="$pp_hash"
                 if [ -z "${hash_to_first_arch[$pp_hash]+x}" ]; then
