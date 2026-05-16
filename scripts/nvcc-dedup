@@ -69,8 +69,13 @@ for arg in "$@"; do
             [[ "$gencode" =~ arch=([a-z_0-9]+) ]] && arch_val="${BASH_REMATCH[1]}"
 
             if [ -n "$arch_val" ]; then
+                # Normalize out __CUDA_ARCH__-derived values so arches with
+                # identical code paths hash the same. The only non-guard use
+                # of __CUDA_ARCH__ is in no_device_code() calls.
                 pp_hash=$("$NVCC" -E -arch="$arch_val" "${include_flags[@]}" "$src_file" 2>/dev/null \
-                    | grep -v '^#' | md5sum | cut -d' ' -f1) || pp_hash="$arg"
+                    | grep -v '^#' \
+                    | sed 's/no_device_code([^)]*)/no_device_code()/g' \
+                    | md5sum | cut -d' ' -f1) || pp_hash="$arg"
                 arch_hashes["$arg"]="$pp_hash"
                 if [ -z "${hash_to_first_arch[$pp_hash]+x}" ]; then
                     hash_to_first_arch["$pp_hash"]="$arg"
