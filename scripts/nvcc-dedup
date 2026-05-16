@@ -34,7 +34,7 @@ for arg in "$@"; do
     fi
     case "$arg" in
         *.cu) src_file="$arg" ;;
-        -I*|-isystem*|--include-path*|-D*|--define-macro*|-std*|--std*) include_flags+=("$arg") ;;
+        -I*|-isystem*|--include-path*) include_flags+=("$arg") ;;
     esac
     prev="$arg"
 done
