@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1
 # vim: filetype=dockerfile
 
 FROM nvidia/cuda:13.0.0-devel-ubuntu24.04 AS build
