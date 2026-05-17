@@ -18,12 +18,12 @@
     "steps": [
       {
         "name": "input_hash",
-        "command": "md5sum {{.rest | filterSuffix \".cpp1.ii\" | first}} | cut -d' ' -f1"
+        "command": "f={{.rest | filterSuffix \".cpp1.ii\" | first}}; echo hash=$f >&2; md5sum \"$f\" | cut -d' ' -f1"
       },
       {
         "name": "restore",
-        "when": "{{and .result.input_hash (fileExists (printf \"%s/%s/o\" .var.cache_dir .result.input_hash))}}",
-        "command": "cp {{.var.cache_dir}}/{{.result.input_hash}}/o {{shellquote .flag.o}} && cp {{.var.cache_dir}}/{{.result.input_hash}}/gen_c_file_name {{shellquote .flag.gen_c_file_name}} && cp {{.var.cache_dir}}/{{.result.input_hash}}/gen_device_file_name {{shellquote .flag.gen_device_file_name}} && cp {{.var.cache_dir}}/{{.result.input_hash}}/stub_file_name {{shellquote .flag.stub_file_name}} && cp {{.var.cache_dir}}/{{.result.input_hash}}/module_id_file_name {{shellquote .flag.module_id_file_name}} && echo hit"
+        "when": "{{and .result.input_hash (ne .result.input_hash \"\") (fileExists (printf \"%s/%s/o\" .var.cache_dir .result.input_hash))}}",
+        "command": "set -e && cp {{.var.cache_dir}}/{{.result.input_hash}}/o {{shellquote .flag.o}} && cp {{.var.cache_dir}}/{{.result.input_hash}}/gen_c_file_name {{shellquote .flag.gen_c_file_name}} && cp {{.var.cache_dir}}/{{.result.input_hash}}/gen_device_file_name {{shellquote .flag.gen_device_file_name}} && cp {{.var.cache_dir}}/{{.result.input_hash}}/stub_file_name {{shellquote .flag.stub_file_name}} && cp {{.var.cache_dir}}/{{.result.input_hash}}/module_id_file_name {{shellquote .flag.module_id_file_name}} && echo hit"
       },
       {
         "name": "compile",
