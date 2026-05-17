@@ -22,7 +22,7 @@
       },
       {
         "name": "restore",
-        "when": "{{fileExists (printf \"%s/%s\" .var.cache_dir .result.input_hash)}}",
+        "when": "{{and .result.input_hash (fileExists (printf \"%s/%s/o\" .var.cache_dir .result.input_hash))}}",
         "command": "cp {{.var.cache_dir}}/{{.result.input_hash}}/o {{shellquote .flag.o}} && cp {{.var.cache_dir}}/{{.result.input_hash}}/gen_c_file_name {{shellquote .flag.gen_c_file_name}} && cp {{.var.cache_dir}}/{{.result.input_hash}}/gen_device_file_name {{shellquote .flag.gen_device_file_name}} && cp {{.var.cache_dir}}/{{.result.input_hash}}/stub_file_name {{shellquote .flag.stub_file_name}} && cp {{.var.cache_dir}}/{{.result.input_hash}}/module_id_file_name {{shellquote .flag.module_id_file_name}} && echo hit"
       },
       {
