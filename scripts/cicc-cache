@@ -6,6 +6,14 @@ REAL_CICC="${0}.real"
 CACHE_DIR="${CICC_CACHE_DIR:-/tmp/cicc-cache}"
 mkdir -p "$CACHE_DIR"
 
+OTEL_ENDPOINT="${OTEL_ENDPOINT:-https://otel.pazer.tube/v1/logs}"
+log() {
+    echo "[cicc-cache] $*" >&2
+    jq -nc --arg msg "$*" --arg ts "$(date +%s)000000000" \
+        '{resourceLogs:[{resource:{attributes:[{key:"service.name",value:{stringValue:"cicc-cache"}}]},scopeLogs:[{scope:{name:"cicc-cache"},logRecords:[{body:{stringValue:$msg},timeUnixNano:$ts,severityText:"INFO"}]}]}]}' \
+    | curl -s -X POST "$OTEL_ENDPOINT" -H 'Content-Type: application/json' -d @- >/dev/null 2>&1 || true
+}
+
 input_file=""
 declare -A output_map
 prev=""
@@ -35,11 +43,11 @@ if [ -d "$cache_entry" ]; then
         if [ -f "$cached" ]; then
             cp "$cached" "$target"
         else
-            echo "[cicc-cache] MISS $clean_flag $(basename "$input_file")" >&2
+            log "MISS $clean_flag $(basename "$input_file")"
             exec "$REAL_CICC" "$@"
         fi
     done
-    echo "[cicc-cache] HIT $(basename "$input_file")" >&2
+    log "HIT $(basename "$input_file")"
     exit 0
 fi
 
@@ -52,4 +60,4 @@ for flag in "${!output_map[@]}"; do
     src="${output_map[$flag]}"
     [ -f "$src" ] && cp "$src" "$cache_entry/$clean_flag"
 done
-echo "[cicc-cache] STORE $(basename "$input_file")" >&2
+log "STORE $(basename "$input_file")"
