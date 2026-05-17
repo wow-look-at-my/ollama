@@ -3,26 +3,36 @@ From: nobody <>
 Date: Sat, 17 May 2026 21:00:00 +0000
 Subject: [PATCH] ggml-cuda: skip unity build for incompatible files
 
-Exclude template-instances/*.cu from unity builds because they each
-#include a shared header that defines functions, causing redefinition
-errors when combined into a single translation unit.
+Exclude files from CMake unity builds that cause redefinition errors
+when combined into a single translation unit:
 
-Also exclude conv2d.cu, conv2d-dw.cu (duplicate struct/function names),
-and argsort.cu, mean.cu, sum.cu, ssm-scan.cu (using namespace cub;).
+- template-instances/*.cu: each includes a shared header that defines
+  functions, causing collisions when merged
+- fattn.cu, fattn-tile.cu, fattn-wmma-f16.cu: include fattn-tile.cuh
+  and fattn-vec.cuh which define non-static functions
+- convert.cu, cpy.cu, getrows.cu: share dequantize.cuh
+- mean.cu, sumrows.cu: share reduce_rows.cuh
+- conv2d.cu, conv2d-dw.cu: duplicate struct/function definitions
+- argsort.cu, sum.cu, ssm-scan.cu: using namespace cub; at file scope
 ---
- ggml/src/ggml-cuda/CMakeLists.txt | 4 ++++
- 1 file changed, 4 insertions(+)
+ ggml/src/ggml-cuda/CMakeLists.txt | 8 ++++++++
+ 1 file changed, 8 insertions(+)
 
 diff --git a/ggml/src/ggml-cuda/CMakeLists.txt b/ggml/src/ggml-cuda/CMakeLists.txt
-index 67af1d8..4fff6bc 100644
+index 67af1d8..e3a7f1c 100644
 --- a/ggml/src/ggml-cuda/CMakeLists.txt
 +++ b/ggml/src/ggml-cuda/CMakeLists.txt
-@@ -71,6 +71,10 @@ if (CUDAToolkit_FOUND)
+@@ -71,6 +71,14 @@ if (CUDAToolkit_FOUND)
                               ${GGML_SOURCES_CUDA}
                              )
 
 +    file(GLOB UNITY_EXCLUDED "template-instances/*.cu")
-+    list(APPEND UNITY_EXCLUDED conv2d.cu conv2d-dw.cu argsort.cu mean.cu sum.cu ssm-scan.cu)
++    list(APPEND UNITY_EXCLUDED
++        conv2d.cu conv2d-dw.cu argsort.cu mean.cu sum.cu ssm-scan.cu
++        fattn.cu fattn-tile.cu fattn-wmma-f16.cu
++        convert.cu cpy.cu getrows.cu
++        sumrows.cu
++    )
 +    set_source_files_properties(${UNITY_EXCLUDED} PROPERTIES SKIP_UNITY_BUILD_INCLUSION ON)
 +
      add_compile_definitions(GGML_CUDA_PEER_MAX_BATCH_SIZE=${GGML_CUDA_PEER_MAX_BATCH_SIZE})

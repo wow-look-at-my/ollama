@@ -72,7 +72,12 @@ if (CUDAToolkit_FOUND)
                             )
 
     file(GLOB UNITY_EXCLUDED "template-instances/*.cu")
-    list(APPEND UNITY_EXCLUDED conv2d.cu conv2d-dw.cu argsort.cu mean.cu sum.cu ssm-scan.cu)
+    list(APPEND UNITY_EXCLUDED
+        conv2d.cu conv2d-dw.cu argsort.cu mean.cu sum.cu ssm-scan.cu
+        fattn.cu fattn-tile.cu fattn-wmma-f16.cu
+        convert.cu cpy.cu getrows.cu
+        sumrows.cu
+    )
     set_source_files_properties(${UNITY_EXCLUDED} PROPERTIES SKIP_UNITY_BUILD_INCLUSION ON)
 
     add_compile_definitions(GGML_CUDA_PEER_MAX_BATCH_SIZE=${GGML_CUDA_PEER_MAX_BATCH_SIZE})
