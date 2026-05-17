@@ -1,2 +1,50 @@
 #!/bin/sh
-exec /usr/local/bin/api-cli --config /usr/local/share/cicc-cache.json exec -- "$@"
+
+REAL_CICC=/usr/local/cuda/nvvm/bin/cicc.real
+CACHE_DIR=/tmp/cicc-cache
+
+flag_o=""
+flag_gen_c_file_name=""
+flag_stub_file_name=""
+flag_gen_device_file_name=""
+flag_module_id_file_name=""
+input_file=""
+
+args=("$@")
+i=0
+while [ $i -lt ${#args[@]} ]; do
+    case "${args[$i]}" in
+        -o)                      flag_o="${args[$((i+1))]}"; i=$((i+2)) ;;
+        --gen_c_file_name)       flag_gen_c_file_name="${args[$((i+1))]}"; i=$((i+2)) ;;
+        --stub_file_name)        flag_stub_file_name="${args[$((i+1))]}"; i=$((i+2)) ;;
+        --gen_device_file_name)  flag_gen_device_file_name="${args[$((i+1))]}"; i=$((i+2)) ;;
+        --module_id_file_name)   flag_module_id_file_name="${args[$((i+1))]}"; i=$((i+2)) ;;
+        *.cpp1.ii)               input_file="${args[$i]}"; i=$((i+1)) ;;
+        *)                       i=$((i+1)) ;;
+    esac
+done
+
+if [ -z "$input_file" ] || [ -z "$flag_o" ]; then
+    exec "$REAL_CICC" "$@"
+fi
+
+hash=$(md5sum "$input_file" | cut -d' ' -f1)
+entry="$CACHE_DIR/$hash"
+
+if [ -f "$entry/o" ]; then
+    cp "$entry/o" "$flag_o"
+    cp "$entry/gen_c_file_name" "$flag_gen_c_file_name"
+    cp "$entry/gen_device_file_name" "$flag_gen_device_file_name"
+    cp "$entry/stub_file_name" "$flag_stub_file_name"
+    cp "$entry/module_id_file_name" "$flag_module_id_file_name"
+    exit 0
+fi
+
+"$REAL_CICC" "$@" || exit $?
+
+mkdir -p "$entry"
+cp "$flag_o" "$entry/o"
+cp "$flag_gen_c_file_name" "$entry/gen_c_file_name"
+cp "$flag_gen_device_file_name" "$entry/gen_device_file_name"
+cp "$flag_stub_file_name" "$entry/stub_file_name"
+cp "$flag_module_id_file_name" "$entry/module_id_file_name"

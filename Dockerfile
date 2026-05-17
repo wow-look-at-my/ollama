@@ -7,7 +7,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
     rm -f /etc/apt/apt.conf.d/docker-clean \
     && apt-get update && apt-get install -y --no-install-recommends \
-        cmake ninja-build ccache ca-certificates curl gcc g++ jq
+        cmake ninja-build ccache ca-certificates curl gcc g++
 ENV CMAKE_GENERATOR=Ninja
 ENV CMAKE_C_COMPILER_LAUNCHER=ccache
 ENV CMAKE_CXX_COMPILER_LAUNCHER=ccache
@@ -21,12 +21,6 @@ RUN --mount=type=cache,target=/root/.cache/ccache \
     && cmake --build --preset CPU -j$(nproc) \
     && cmake --install build --component CPU --strip
 
-ADD --unpack https://golang.org/dl/go1.26.0.linux-amd64.tar.gz /usr/local/
-ENV PATH=/usr/local/go/bin:$PATH
-RUN --mount=type=cache,target=/root/go/pkg/mod \
-    --mount=type=cache,target=/root/.cache/go-build \
-    GOBIN=/usr/local/bin go install github.com/wow-look-at-my/api-cli@master
-COPY scripts/cicc-cache.json /usr/local/share/cicc-cache.json
 COPY scripts/cicc-cache /usr/local/cuda/nvvm/bin/cicc-cache
 RUN chmod +x /usr/local/cuda/nvvm/bin/cicc-cache \
     && mv /usr/local/cuda/nvvm/bin/cicc /usr/local/cuda/nvvm/bin/cicc.real \
@@ -35,6 +29,9 @@ RUN chmod +x /usr/local/cuda/nvvm/bin/cicc-cache \
 RUN cmake --preset 'CUDA 13' \
     && cmake --build --preset 'CUDA 13' -j$(nproc) \
     && cmake --install build --component CUDA --strip
+
+ADD --unpack https://golang.org/dl/go1.26.0.linux-amd64.tar.gz /usr/local/
+ENV PATH=/usr/local/go/bin:$PATH
 
 WORKDIR /build/ollama
 COPY go.mod go.sum ./
