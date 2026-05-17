@@ -25,7 +25,7 @@ ADD --unpack https://golang.org/dl/go1.26.0.linux-amd64.tar.gz /usr/local/
 ENV PATH=/usr/local/go/bin:$PATH
 RUN --mount=type=cache,target=/root/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
-    GOBIN=/usr/local/bin go install github.com/wow-look-at-my/api-cli@1811548
+    GOBIN=/usr/local/bin go install github.com/wow-look-at-my/api-cli@master
 COPY scripts/cicc-cache.json /usr/local/share/cicc-cache.json
 COPY scripts/cicc-cache /usr/local/cuda/nvvm/bin/cicc-cache
 RUN chmod +x /usr/local/cuda/nvvm/bin/cicc-cache \
