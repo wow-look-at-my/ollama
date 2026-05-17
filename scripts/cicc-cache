@@ -15,7 +15,7 @@ for arg in "$@"; do
         -o|--gen_c_file_name|--stub_file_name|--gen_device_file_name|--module_id_file_name)
             output_map["$prev"]="$arg" ;;
     esac
-    case "$arg" in *.cpp1.ii) input_file="$arg" ;; esac
+    case "$arg" in *.cpp1.ii|*.cpp4.ii) input_file="$arg" ;; esac
     prev="$arg"
 done
 
