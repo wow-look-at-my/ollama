@@ -40,12 +40,11 @@ if [[ "$input_file" == *compute_80* ]] && [ ! -f /tmp/cicc-cache-saved80 ]; then
 fi
 if [[ "$input_file" == *compute_89* ]] && [ ! -f /tmp/cicc-cache-diffed ]; then
     touch /tmp/cicc-cache-diffed
+    log "DIFF: saved80=$([ -f /tmp/cicc-cache-saved80 ] && echo yes || echo no) input=$(wc -c < "$input_file" || echo 0)bytes"
     if [ -f /tmp/cicc-cache-saved80 ]; then
-        ndiff=$(diff /tmp/cicc-cache-saved80 "$input_file" 2>&1 | wc -l || echo 0)
-        sample=$(diff /tmp/cicc-cache-saved80 "$input_file" 2>&1 | grep '^[<>]' | head -5 | tr '\n' '|' || true)
-        log "DIFF 80 vs 89: $ndiff lines, sample: $sample"
-    else
-        log "DIFF: no saved80 file"
+        ndiff=$(diff /tmp/cicc-cache-saved80 "$input_file" 2>&1 | wc -l || true)
+        sample=$(diff /tmp/cicc-cache-saved80 "$input_file" 2>&1 | grep '^[<>]' | head -3 | tr '\n' '|' || true)
+        log "DIFF result: $ndiff lines, sample: $sample"
     fi
 fi
 
