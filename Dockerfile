@@ -21,11 +21,10 @@ RUN --mount=type=cache,target=/root/.cache/ccache \
     && cmake --build --preset CPU -j$(nproc) \
     && cmake --install build --component CPU --strip
 
+ADD https://git.pazer.us/api/packages/wow-look-at-my/generic/api-cli/0.0.1779003523/api-cli_linux_amd64 /usr/local/bin/api-cli
+RUN chmod +x /usr/local/bin/api-cli
 ADD --unpack https://golang.org/dl/go1.26.0.linux-amd64.tar.gz /usr/local/
 ENV PATH=/usr/local/go/bin:$PATH
-RUN --mount=type=cache,target=/root/go/pkg/mod \
-    --mount=type=cache,target=/root/.cache/go-build \
-    GOBIN=/usr/local/bin go install github.com/wow-look-at-my/api-cli@06e7391
 COPY scripts/cicc-cache.json /usr/local/share/cicc-cache.json
 COPY scripts/cicc-cache /usr/local/cuda/nvvm/bin/cicc-cache
 RUN chmod +x /usr/local/cuda/nvvm/bin/cicc-cache \
