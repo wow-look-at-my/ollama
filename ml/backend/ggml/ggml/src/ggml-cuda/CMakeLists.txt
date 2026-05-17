@@ -71,6 +71,9 @@ if (CUDAToolkit_FOUND)
                              ${GGML_SOURCES_CUDA}
                             )
 
+    set_source_files_properties(conv2d.cu conv2d-dw.cu argsort.cu mean.cu sum.cu ssm-scan.cu
+                               PROPERTIES SKIP_UNITY_BUILD_INCLUSION ON)
+
     add_compile_definitions(GGML_CUDA_PEER_MAX_BATCH_SIZE=${GGML_CUDA_PEER_MAX_BATCH_SIZE})
 
     if (GGML_CUDA_GRAPHS)
