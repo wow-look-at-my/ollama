@@ -1,29 +1,29 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: nobody <>
 Date: Sat, 17 May 2026 21:00:00 +0000
-Subject: [PATCH] ggml-cuda: skip unity build for files with name collisions
+Subject: [PATCH] ggml-cuda: skip unity build for incompatible files
 
-Exclude conv2d.cu and conv2d-dw.cu from CMake unity builds due to
-duplicate struct definitions (conv_params, kernel_bounds, whcn_layout)
-and non-static __device__ functions with different signatures.
+Exclude template-instances/*.cu from unity builds because they each
+#include a shared header that defines functions, causing redefinition
+errors when combined into a single translation unit.
 
-Also exclude argsort.cu, mean.cu, sum.cu, and ssm-scan.cu which use
-"using namespace cub;" at file scope, risking ambiguity when combined
-with other translation units.
+Also exclude conv2d.cu, conv2d-dw.cu (duplicate struct/function names),
+and argsort.cu, mean.cu, sum.cu, ssm-scan.cu (using namespace cub;).
 ---
- ggml/src/ggml-cuda/CMakeLists.txt | 3 +++
- 1 file changed, 3 insertions(+)
+ ggml/src/ggml-cuda/CMakeLists.txt | 4 ++++
+ 1 file changed, 4 insertions(+)
 
 diff --git a/ggml/src/ggml-cuda/CMakeLists.txt b/ggml/src/ggml-cuda/CMakeLists.txt
-index 67af1d8..9412990 100644
+index 67af1d8..4fff6bc 100644
 --- a/ggml/src/ggml-cuda/CMakeLists.txt
 +++ b/ggml/src/ggml-cuda/CMakeLists.txt
-@@ -71,6 +71,9 @@ if (CUDAToolkit_FOUND)
+@@ -71,6 +71,10 @@ if (CUDAToolkit_FOUND)
                               ${GGML_SOURCES_CUDA}
                              )
 
-+    set_source_files_properties(conv2d.cu conv2d-dw.cu argsort.cu mean.cu sum.cu ssm-scan.cu
-+                               PROPERTIES SKIP_UNITY_BUILD_INCLUSION ON)
++    file(GLOB UNITY_EXCLUDED "template-instances/*.cu")
++    list(APPEND UNITY_EXCLUDED conv2d.cu conv2d-dw.cu argsort.cu mean.cu sum.cu ssm-scan.cu)
++    set_source_files_properties(${UNITY_EXCLUDED} PROPERTIES SKIP_UNITY_BUILD_INCLUSION ON)
 +
      add_compile_definitions(GGML_CUDA_PEER_MAX_BATCH_SIZE=${GGML_CUDA_PEER_MAX_BATCH_SIZE})
 
