@@ -25,7 +25,7 @@ RUN chmod +x /usr/local/cuda/nvvm/bin/cicc-cache \
     && mv /usr/local/cuda/nvvm/bin/cicc /usr/local/cuda/nvvm/bin/cicc.real \
     && mv /usr/local/cuda/nvvm/bin/cicc-cache /usr/local/cuda/nvvm/bin/cicc
 
-RUN cmake --preset 'CUDA 13' \
+RUN cmake --preset 'CUDA 13' -DCMAKE_CUDA_ARCHITECTURES=86 \
     && cmake --build --preset 'CUDA 13' -j$(nproc) \
     && cmake --install build --component CUDA --strip
 
