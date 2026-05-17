@@ -18,11 +18,11 @@
     "steps": [
       {
         "name": "input_hash",
-        "command": "printf 'h%s' $(md5sum {{.rest | filterSuffix \".cpp1.ii\" | first}} | cut -d' ' -f1)"
+        "command": "md5sum {{.rest | filterSuffix \".cpp1.ii\" | first}} | cut -d' ' -f1"
       },
       {
         "name": "restore",
-        "when": "{{fileExists (printf \"%s/%v/o\" .var.cache_dir .result.input_hash)}}",
+        "when": "{{fileExists (printf \"%s/%s/o\" .var.cache_dir .result.input_hash)}}",
         "command": "cp {{.var.cache_dir}}/{{.result.input_hash}}/o {{shellquote .flag.o}} && cp {{.var.cache_dir}}/{{.result.input_hash}}/gen_c_file_name {{shellquote .flag.gen_c_file_name}} && cp {{.var.cache_dir}}/{{.result.input_hash}}/gen_device_file_name {{shellquote .flag.gen_device_file_name}} && cp {{.var.cache_dir}}/{{.result.input_hash}}/stub_file_name {{shellquote .flag.stub_file_name}} && cp {{.var.cache_dir}}/{{.result.input_hash}}/module_id_file_name {{shellquote .flag.module_id_file_name}} && echo hit"
       },
       {
