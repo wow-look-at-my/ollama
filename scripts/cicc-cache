@@ -33,21 +33,6 @@ if [ ! -f /tmp/cicc-cache-logged ]; then
     log "args: $*"
 fi
 
-# One-time: save compute_80 input, then diff against compute_89
-if [[ "$input_file" == *compute_80* ]] && [ ! -f /tmp/cicc-cache-saved80 ]; then
-    cp "$input_file" /tmp/cicc-cache-saved80
-    log "SAVED compute_80: $input_file ($(wc -l < "$input_file") lines)"
-fi
-if [[ "$input_file" == *compute_89* ]] && [ ! -f /tmp/cicc-cache-diffed ]; then
-    touch /tmp/cicc-cache-diffed
-    log "DIFF: saved80=$([ -f /tmp/cicc-cache-saved80 ] && echo yes || echo no) input=$(wc -c < "$input_file" || echo 0)bytes"
-    if [ -f /tmp/cicc-cache-saved80 ]; then
-        ndiff=$(diff /tmp/cicc-cache-saved80 "$input_file" 2>&1 | wc -l || true)
-        sample=$(diff /tmp/cicc-cache-saved80 "$input_file" 2>&1 | grep '^[<>]' | head -3 | tr '\n' '|' || true)
-        log "DIFF result: $ndiff lines, sample: $sample"
-    fi
-fi
-
 for arg in "$@"; do
     case "$prev" in
         -o|--gen_c_file_name|--stub_file_name|--gen_device_file_name|--module_id_file_name)
@@ -56,6 +41,21 @@ for arg in "$@"; do
     case "$arg" in *.cpp1.ii|*.cpp4.ii) input_file="$arg" ;; esac
     prev="$arg"
 done
+
+# One-time: save compute_80 input, then diff against compute_89
+if [[ "$input_file" == *compute_80* ]] && [ ! -f /tmp/cicc-cache-saved80 ]; then
+    cp "$input_file" /tmp/cicc-cache-saved80
+    log "SAVED compute_80: $(wc -c < "$input_file") bytes"
+fi
+if [[ "$input_file" == *compute_89* ]] && [ ! -f /tmp/cicc-cache-diffed ]; then
+    touch /tmp/cicc-cache-diffed
+    log "DIFF: saved80=$([ -f /tmp/cicc-cache-saved80 ] && echo yes || echo no) input=$(wc -c < "$input_file")bytes"
+    if [ -f /tmp/cicc-cache-saved80 ]; then
+        ndiff=$(diff /tmp/cicc-cache-saved80 "$input_file" 2>&1 | wc -l || true)
+        sample=$(diff /tmp/cicc-cache-saved80 "$input_file" 2>&1 | grep '^[<>]' | head -3 | tr '\n' '|' || true)
+        log "DIFF result: $ndiff lines, sample: $sample"
+    fi
+fi
 
 if [ -z "$input_file" ] || [ ! -f "$input_file" ] || [ ${#output_map[@]} -eq 0 ]; then
     exec "$REAL_CICC" "$@"
