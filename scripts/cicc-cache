@@ -35,9 +35,11 @@ if [ -d "$cache_entry" ]; then
         if [ -f "$cached" ]; then
             cp "$cached" "$target"
         else
+            echo "[cicc-cache] MISS $clean_flag $(basename "$input_file")" >&2
             exec "$REAL_CICC" "$@"
         fi
     done
+    echo "[cicc-cache] HIT $(basename "$input_file")" >&2
     exit 0
 fi
 
@@ -50,3 +52,4 @@ for flag in "${!output_map[@]}"; do
     src="${output_map[$flag]}"
     [ -f "$src" ] && cp "$src" "$cache_entry/$clean_flag"
 done
+echo "[cicc-cache] STORE $(basename "$input_file")" >&2
