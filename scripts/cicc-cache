@@ -42,18 +42,18 @@ for arg in "$@"; do
     prev="$arg"
 done
 
-# One-time: save compute_80 input, then diff against compute_89
-if [[ "$input_file" == *compute_80* ]] && [ ! -f /tmp/cicc-cache-saved80 ]; then
-    cp "$input_file" /tmp/cicc-cache-saved80
-    log "SAVED compute_80: $(wc -c < "$input_file") bytes"
+# One-time: diff compute_80 vs compute_89 for the SAME source file
+src_name=$(basename "$input_file" | grep -oP '(?<=_)[a-z][-a-z0-9]*(?=\.compute)' || true)
+if [[ "$input_file" == *compute_80* ]] && [ -n "$src_name" ]; then
+    cp "$input_file" "/tmp/cicc-pp80-$src_name"
 fi
-if [[ "$input_file" == *compute_89* ]] && [ ! -f /tmp/cicc-cache-diffed ]; then
-    touch /tmp/cicc-cache-diffed
-    log "DIFF: saved80=$([ -f /tmp/cicc-cache-saved80 ] && echo yes || echo no) input=$(wc -c < "$input_file")bytes"
-    if [ -f /tmp/cicc-cache-saved80 ]; then
-        ndiff=$(diff /tmp/cicc-cache-saved80 "$input_file" 2>&1 | wc -l || true)
-        sample=$(diff /tmp/cicc-cache-saved80 "$input_file" 2>&1 | grep '^[<>]' | head -3 | tr '\n' '|' || true)
-        log "DIFF result: $ndiff lines, sample: $sample"
+if [[ "$input_file" == *compute_89* ]] && [ -n "$src_name" ] && [ ! -f /tmp/cicc-cache-diffed ]; then
+    saved="/tmp/cicc-pp80-$src_name"
+    if [ -f "$saved" ]; then
+        touch /tmp/cicc-cache-diffed
+        ndiff=$(diff "$saved" "$input_file" 2>&1 | wc -l || true)
+        sample=$(diff "$saved" "$input_file" 2>&1 | grep '^[<>]' | head -5 | tr '\n' '|' || true)
+        log "DIFF 80 vs 89 ($src_name): $ndiff lines, sample: $sample"
     fi
 fi
 
