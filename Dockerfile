@@ -3,11 +3,15 @@
 
 FROM nvidia/cuda:13.0.0-devel-ubuntu24.04 AS build
 
+ARG CMAKE_VERSION=4.3.2
+ADD --unpack "https://github.com/Kitware/CMake/releases/download/v${CMAKE_VERSION}/cmake-${CMAKE_VERSION}-linux-x86_64.tar.gz" /opt/cmake
+ENV PATH=/opt/cmake/cmake-${CMAKE_VERSION}-linux-x86_64/bin:$PATH
+
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
     rm -f /etc/apt/apt.conf.d/docker-clean \
     && apt-get update && apt-get install -y --no-install-recommends \
-        cmake ninja-build ccache ca-certificates curl gcc g++
+        ninja-build ccache ca-certificates curl gcc g++
 ENV CMAKE_GENERATOR=Ninja
 ENV CMAKE_C_COMPILER_LAUNCHER=ccache
 ENV CMAKE_CXX_COMPILER_LAUNCHER=ccache
