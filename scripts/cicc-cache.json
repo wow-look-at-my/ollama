@@ -28,7 +28,7 @@
       {
         "name": "compile",
         "when": "{{not .result.restore}}",
-        "command": "{{.var.real_cicc}} {{spread .rest}}"
+        "command": "{{.var.real_cicc}} {{spread .rest}} -o {{shellquote .flag.o}} --gen_c_file_name {{shellquote .flag.gen_c_file_name}} --stub_file_name {{shellquote .flag.stub_file_name}} --gen_device_file_name {{shellquote .flag.gen_device_file_name}} --module_id_file_name {{shellquote .flag.module_id_file_name}}"
       },
       {
         "name": "store",
