@@ -28,7 +28,7 @@
       {
         "name": "compile",
         "when": "{{not .result.restore}}",
-        "command": ["{{.var.real_cicc}}", "{{spread .rest}}"]
+        "command": "{{.var.real_cicc}} {{spread .rest}}"
       },
       {
         "name": "store",
