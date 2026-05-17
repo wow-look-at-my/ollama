@@ -6,13 +6,7 @@ REAL_CICC="${0}.real"
 CACHE_DIR="${CICC_CACHE_DIR:-/tmp/cicc-cache}"
 mkdir -p "$CACHE_DIR"
 
-OTEL_ENDPOINT="${OTEL_ENDPOINT:-https://otel.pazer.tube/v1/logs}"
-log() {
-    echo "[cicc-cache] $*" >&2
-    jq -nc --arg msg "$*" --arg ts "$(date +%s)000000000" \
-        '{resourceLogs:[{resource:{attributes:[{key:"service.name",value:{stringValue:"cicc-cache"}}]},scopeLogs:[{scope:{name:"cicc-cache"},logRecords:[{body:{stringValue:$msg},timeUnixNano:$ts,severityText:"INFO"}]}]}]}' \
-    | curl -s -X POST "$OTEL_ENDPOINT" -H 'Content-Type: application/json' -d @- >/dev/null 2>&1 || true
-}
+log() { echo "[cicc-cache] $*" >&2; }
 
 input_file=""
 declare -A output_map
