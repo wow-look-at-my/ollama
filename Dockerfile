@@ -21,12 +21,6 @@ RUN --mount=type=cache,target=/root/.cache/ccache \
     && cmake --build --preset CPU -j$(nproc) \
     && cmake --install build --component CPU --strip
 
-ADD --unpack https://golang.org/dl/go1.26.0.linux-amd64.tar.gz /usr/local/
-ENV PATH=/usr/local/go/bin:$PATH
-RUN --mount=type=cache,target=/root/go/pkg/mod \
-    --mount=type=cache,target=/root/.cache/go-build \
-    GOBIN=/usr/local/bin go install github.com/wow-look-at-my/api-cli@06e7391
-COPY scripts/cicc-cache.json /usr/local/share/cicc-cache.json
 COPY scripts/cicc-cache /usr/local/cuda/nvvm/bin/cicc-cache
 RUN chmod +x /usr/local/cuda/nvvm/bin/cicc-cache \
     && mv /usr/local/cuda/nvvm/bin/cicc /usr/local/cuda/nvvm/bin/cicc.real \
@@ -39,6 +33,9 @@ RUN --mount=type=cache,target=/root/.cache/ccache \
 
 WORKDIR /build/ollama
 COPY go.mod go.sum ./
+ARG GO_VERSION=1.26.0
+ADD --unpack "https://golang.org/dl/go${GO_VERSION}.linux-amd64.tar.gz" /usr/local/
+ENV PATH=/usr/local/go/bin:$PATH
 
 RUN --mount=type=cache,target=/root/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
