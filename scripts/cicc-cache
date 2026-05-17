@@ -1,2 +1,2 @@
 #!/bin/sh
-exec /usr/local/bin/api-cli --config /usr/local/share/cicc-cache.json exec -- "$@"
+exec /usr/local/bin/api-cli --debug --config /usr/local/share/cicc-cache.json exec -- "$@"
