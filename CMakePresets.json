@@ -16,10 +16,7 @@
     },
     {
       "name": "CUDA",
-      "inherits": [ "Default" ],
-      "cacheVariables": {
-        "CMAKE_UNITY_BUILD": "ON"
-      }
+      "inherits": [ "Default" ]
     },
     {
       "name": "CUDA 11",

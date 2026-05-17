@@ -68,19 +68,6 @@ RUN chmod +x /usr/local/cuda/nvvm/bin/cicc-cache \
 
 - `CICC_CACHE_DIR` -- Override cache directory (default: `/tmp/cicc-cache`).
 
-## Unity builds
-
-CMake unity builds (`CMAKE_UNITY_BUILD=ON`) are enabled for CUDA presets,
-combining multiple `.cu` files into single translation units. This reduces the
-number of nvcc invocations from ~140 to ~14 (at the default batch size of 8),
-which in turn reduces total cicc calls proportionally.
-
-Files excluded from unity build via `SKIP_UNITY_BUILD_INCLUSION`:
-- `conv2d.cu`, `conv2d-dw.cu` -- duplicate struct/function names with different
-  signatures (ODR violations)
-- `argsort.cu`, `mean.cu`, `sum.cu`, `ssm-scan.cu` -- `using namespace cub;` at
-  file scope risks ambiguity when combined with other files
-
 ## Limitations
 
 - Only caches within a single build. The cache lives in `/tmp` which is ephemeral
