@@ -21,8 +21,12 @@ RUN --mount=type=cache,target=/root/.cache/ccache \
     && cmake --build --preset CPU -j$(nproc) \
     && cmake --install build --component CPU --strip
 
+ADD https://github.com/wow-look-at-my/api-cli/releases/latest/download/api-cli_linux_amd64 /usr/local/bin/api-cli
+RUN chmod +x /usr/local/bin/api-cli
+COPY scripts/cicc-cache.json /usr/local/share/cicc-cache.json
 COPY scripts/cicc-cache /usr/local/cuda/nvvm/bin/cicc-cache
-RUN mv /usr/local/cuda/nvvm/bin/cicc /usr/local/cuda/nvvm/bin/cicc.real \
+RUN chmod +x /usr/local/cuda/nvvm/bin/cicc-cache \
+    && mv /usr/local/cuda/nvvm/bin/cicc /usr/local/cuda/nvvm/bin/cicc.real \
     && mv /usr/local/cuda/nvvm/bin/cicc-cache /usr/local/cuda/nvvm/bin/cicc
 
 RUN --mount=type=cache,target=/root/.cache/ccache \
