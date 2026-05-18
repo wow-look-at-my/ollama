@@ -24,7 +24,8 @@ type Model struct {
 
 	*VisionModel `gguf:"v"`
 	*TextModel
-	*AudioModel `gguf:"a"`
+	*AudioModel  `gguf:"a"`
+	*DraftModel  `gguf:"draft"`
 
 	*MultiModalProjector      `gguf:"mm"`
 	*AudioMultimodalProjector `gguf:"mm.a"`
@@ -101,6 +102,7 @@ func New(c fs.Config) (model.Model, error) {
 		TextModel:                newTextModel(c),
 		VisionModel:              newVisionModel(c),
 		AudioModel:               newAudioModel(c),
+		DraftModel:               newDraftModel(c),
 		MultiModalProjector:      &MultiModalProjector{},
 		AudioMultimodalProjector: &AudioMultimodalProjector{},
 		ImageProcessor:           newImageProcessor(c),
