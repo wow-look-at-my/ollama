@@ -7,10 +7,15 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
     rm -f /etc/apt/apt.conf.d/docker-clean \
     && apt-get update && apt-get install -y --no-install-recommends \
-        cmake ninja-build ccache ca-certificates curl gcc g++
+        cmake ninja-build ccache ca-certificates curl gcc g++ \
+        libopenblas-dev liblapack-dev
 ENV CMAKE_GENERATOR=Ninja
 ENV CMAKE_C_COMPILER_LAUNCHER=ccache
 ENV CMAKE_CXX_COMPILER_LAUNCHER=ccache
+
+ARG GO_VERSION=1.26.0
+ADD --unpack "https://golang.org/dl/go${GO_VERSION}.linux-amd64.tar.gz" /usr/local/
+ENV PATH=/usr/local/go/bin:$PATH
 
 WORKDIR /build
 COPY CMakeLists.txt CMakePresets.json ./
@@ -30,9 +35,22 @@ RUN --mount=type=cache,target=/root/.cache/ccache \
     && cmake --build --preset CPU -j$(nproc) \
     && cmake --install build --component CPU --strip
 
-ARG GO_VERSION=1.26.0
-ADD --unpack "https://golang.org/dl/go${GO_VERSION}.linux-amd64.tar.gz" /usr/local/
-ENV PATH=/usr/local/go/bin:$PATH
+COPY x/imagegen/mlx x/imagegen/mlx
+COPY MLX_VERSION MLX_C_VERSION ./
+COPY go.mod go.sum ./
+
+RUN --mount=type=cache,target=/root/go/pkg/mod \
+    go mod download
+
+RUN --mount=type=cache,target=/root/.cache/ccache \
+    --mount=type=cache,target=/root/go/pkg/mod \
+    cmake --preset 'MLX CUDA 13' \
+        -DCMAKE_CUDA_ARCHITECTURES=86 \
+        -DBLAS_INCLUDE_DIRS=/usr/include/openblas \
+        -DLAPACK_INCLUDE_DIRS=/usr/include/openblas \
+    && cmake --build --preset 'MLX CUDA 13' -j$(nproc) \
+    && cmake --install build --component MLX --strip \
+    && cmake --install build --component MLX_VENDOR
 
 WORKDIR /build/ollama
 COPY go.mod go.sum ./
@@ -51,7 +69,8 @@ FROM nvidia/cuda:13.0.0-runtime-ubuntu24.04
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
     rm -f /etc/apt/apt.conf.d/docker-clean \
-    && apt-get update && apt-get install -y --no-install-recommends ca-certificates curl
+    && apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates curl libopenblas0
 
 COPY --from=build /bin/ollama /usr/bin/ollama
 COPY --from=build /build/dist/lib/ollama /usr/lib/ollama
