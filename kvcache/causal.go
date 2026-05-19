@@ -78,10 +78,10 @@ type Causal struct {
 
 	// Speculation state: tracks cells allocated during speculative decoding
 	// (MTP verification) so they can be rolled back if drafts are rejected.
-	speculating     bool
-	specCells       []int   // cell indices allocated during speculation
-	specSeq         int     // the sequence being speculated on
-	specCellRanges  map[int]cellRange // snapshot of cellRanges before speculation
+	speculating    bool
+	specCells      []int             // cell indices allocated during speculation
+	specSeq        int               // the sequence being speculated on
+	specCellRanges map[int]cellRange // snapshot of cellRanges before speculation
 }
 
 type cacheCell struct {

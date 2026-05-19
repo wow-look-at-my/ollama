@@ -60,7 +60,7 @@ func runMTPCycle(
 	draftCtx := s.model.Backend().NewContext()
 	defer draftCtx.Close()
 
-	draftTokens, err := mtpModel.MTPDraft(draftCtx, token, hidden, position, cache)
+	draftTokens, err := mtpModel.MTPDraft(draftCtx, token, hidden, position, cache, maxDraft)
 	if err != nil {
 		slog.Warn("MTP draft failed", "error", err)
 		if isWrapper {

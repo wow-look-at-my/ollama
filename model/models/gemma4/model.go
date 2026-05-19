@@ -24,8 +24,8 @@ type Model struct {
 
 	*VisionModel `gguf:"v"`
 	*TextModel
-	*AudioModel  `gguf:"a"`
-	*DraftModel  `gguf:"draft"`
+	*AudioModel `gguf:"a"`
+	*DraftModel `gguf:"draft"`
 
 	*MultiModalProjector      `gguf:"mm"`
 	*AudioMultimodalProjector `gguf:"mm.a"`
@@ -281,8 +281,7 @@ func (m *Model) ForwardMTP(ctx ml.Context, batch input.Batch) (ml.Tensor, ml.Ten
 	return logits, hidden, nil
 }
 
-func (m *Model) MTPDraft(ctx ml.Context, token int32, hidden ml.Tensor, position int32, cache kvcache.Cache) ([]int32, error) {
-	maxDraft := 4
+func (m *Model) MTPDraft(ctx ml.Context, token int32, hidden ml.Tensor, position int32, cache kvcache.Cache, maxDraft int) ([]int32, error) {
 	var draftTokens []int32
 	lastToken := token
 	lastHidden := hidden

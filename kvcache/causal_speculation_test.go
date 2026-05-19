@@ -1,7 +1,6 @@
 package kvcache
 
 import (
-	"math"
 	"slices"
 	"testing"
 
@@ -449,6 +448,3 @@ func TestSpeculation_DoesNotCorruptOtherSequences(t *testing.T) {
 		t.Fatalf("seq 1: expected 10 cells, got %d", got)
 	}
 }
-
-// Prevent unused imports
-var _ = math.MaxInt32
