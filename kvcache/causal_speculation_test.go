@@ -126,7 +126,7 @@ func TestSpeculation_FullCommit(t *testing.T) {
 	}
 
 	positions := seqPositions(cache, 0)
-	for i := int32(0); i < 14; i++ {
+	for i := range int32(14) {
 		if !slices.Contains(positions, i) {
 			t.Errorf("position %d missing after commit", i)
 		}
@@ -359,7 +359,7 @@ func TestSpeculation_MultipleRounds(t *testing.T) {
 
 	// Verify no ghost entries
 	positions := seqPositions(cache, 0)
-	for i := int32(0); i < int32(expectedCells); i++ {
+	for i := range int32(expectedCells) {
 		if !slices.Contains(positions, i) {
 			t.Errorf("position %d missing after multi-round speculation", i)
 		}
