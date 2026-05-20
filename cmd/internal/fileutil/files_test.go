@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"os/user"
 	"path/filepath"
 	"runtime"
 	"testing"
@@ -275,9 +274,6 @@ func TestWriteWithBackup_FailsIfBackupFails(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("permission tests unreliable on Windows")
 	}
-	if u, err := user.Current(); err == nil && u.Uid == "0" {
-		t.Skip("permission tests unreliable as root")
-	}
 
 	tmpDir := isolatedTempDir(t)
 	path := filepath.Join(tmpDir, "config.json")
@@ -312,9 +308,6 @@ func TestWriteWithBackup_FailsIfBackupFails(t *testing.T) {
 func TestWriteWithBackup_PermissionDenied(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("permission tests unreliable on Windows")
-	}
-	if u, err := user.Current(); err == nil && u.Uid == "0" {
-		t.Skip("permission tests unreliable as root")
 	}
 
 	tmpDir := isolatedTempDir(t)
@@ -505,9 +498,6 @@ func TestWriteWithBackup_EmptyData(t *testing.T) {
 func TestWriteWithBackup_FileUnreadableButDirWritable(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("permission tests unreliable on Windows")
-	}
-	if u, err := user.Current(); err == nil && u.Uid == "0" {
-		t.Skip("permission tests unreliable as root")
 	}
 
 	tmpDir := isolatedTempDir(t)
