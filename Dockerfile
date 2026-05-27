@@ -7,8 +7,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
     rm -f /etc/apt/apt.conf.d/docker-clean \
     && apt-get update && apt-get install -y --no-install-recommends \
-        cmake ninja-build ccache ca-certificates curl gcc g++ git \
-        libopenblas-dev liblapack-dev liblapacke-dev libcudnn9-dev-cuda-13
+        cmake ninja-build ccache ca-certificates curl gcc g++
 ENV CMAKE_GENERATOR=Ninja
 ENV CMAKE_C_COMPILER_LAUNCHER=ccache
 ENV CMAKE_CXX_COMPILER_LAUNCHER=ccache
@@ -34,23 +33,6 @@ RUN --mount=type=cache,target=/root/.cache/ccache \
     cmake --preset CPU \
     && cmake --build --preset CPU -j$(nproc) \
     && cmake --install build --component CPU --strip
-
-COPY x/imagegen/mlx x/imagegen/mlx
-COPY MLX_VERSION MLX_C_VERSION ./
-COPY go.mod go.sum ./
-
-RUN --mount=type=cache,target=/root/go/pkg/mod \
-    go mod download
-
-RUN --mount=type=cache,target=/root/.cache/ccache \
-    --mount=type=cache,target=/root/go/pkg/mod \
-    cmake --preset 'MLX CUDA 13' \
-        -DCMAKE_CUDA_ARCHITECTURES=86 \
-        -DBLAS_INCLUDE_DIRS=/usr/include/openblas \
-        -DLAPACK_INCLUDE_DIRS=/usr/include/openblas \
-    && cmake --build --preset 'MLX CUDA 13' -j$(nproc) \
-    && cmake --install build --component MLX --strip \
-    && cmake --install build --component MLX_VENDOR
 
 WORKDIR /build/ollama
 COPY go.mod go.sum ./
