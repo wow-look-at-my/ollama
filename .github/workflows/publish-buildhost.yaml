@@ -1,0 +1,40 @@
+name: Publish to Buildhost
+
+on:
+  push:
+
+concurrency:
+  group: publish-buildhost-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  id-token: write
+  contents: read
+  actions: read
+
+jobs:
+  # TODO: Replace this job with real build outputs.
+  # Real builds should produce files named ollama_{os}_{arch} (e.g. ollama_linux_amd64,
+  # ollama_darwin_arm64, ollama_windows_amd64.exe) and upload them as a 'go-build' artifact.
+  # The linux-build job in release.yaml is the model to adapt.
+  dummy-files:
+    name: Create dummy artifacts (practice run)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create dummy artifacts
+        run: |
+          mkdir -p artifacts
+          for target in linux_amd64 linux_arm64 darwin_amd64 darwin_arm64; do
+            echo "dummy $target $GITHUB_SHA" > artifacts/ollama_${target}
+          done
+          echo "dummy windows_amd64 $GITHUB_SHA" > artifacts/ollama_windows_amd64.exe
+      - uses: actions/upload-artifact@v4
+        with:
+          name: go-build
+          path: artifacts/
+
+  publish:
+    needs: dummy-files
+    runs-on: ubuntu-latest
+    steps:
+      - uses: wow-look-at-my/buildhost/.github/actions/buildhost-publish@master
