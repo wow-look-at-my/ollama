@@ -8,7 +8,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     rm -f /etc/apt/apt.conf.d/docker-clean \
     && apt-get update && apt-get install -y --no-install-recommends \
         cmake ninja-build ccache ca-certificates curl gcc g++ git \
-        libopenblas-dev liblapack-dev libcudnn9-dev-cuda-13
+        libopenblas-dev liblapack-dev liblapacke-dev libcudnn9-dev-cuda-13
 ENV CMAKE_GENERATOR=Ninja
 ENV CMAKE_C_COMPILER_LAUNCHER=ccache
 ENV CMAKE_CXX_COMPILER_LAUNCHER=ccache
