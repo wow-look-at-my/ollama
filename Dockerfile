@@ -12,10 +12,6 @@ ENV CMAKE_GENERATOR=Ninja
 ENV CMAKE_C_COMPILER_LAUNCHER=ccache
 ENV CMAKE_CXX_COMPILER_LAUNCHER=ccache
 
-ARG GO_VERSION=1.26.0
-ADD --unpack "https://golang.org/dl/go${GO_VERSION}.linux-amd64.tar.gz" /usr/local/
-ENV PATH=/usr/local/go/bin:$PATH
-
 WORKDIR /build
 COPY CMakeLists.txt CMakePresets.json ./
 COPY ml/backend/ggml/ggml ml/backend/ggml/ggml
@@ -34,6 +30,10 @@ RUN --mount=type=cache,target=/root/.cache/ccache \
     && cmake --build --preset CPU -j$(nproc) \
     && cmake --install build --component CPU --strip
 
+ARG GO_VERSION=1.26.0
+ADD --unpack "https://golang.org/dl/go${GO_VERSION}.linux-amd64.tar.gz" /usr/local/
+ENV PATH=/usr/local/go/bin:$PATH
+
 WORKDIR /build/ollama
 COPY go.mod go.sum ./
 
@@ -51,8 +51,7 @@ FROM nvidia/cuda:13.0.0-runtime-ubuntu24.04
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
     rm -f /etc/apt/apt.conf.d/docker-clean \
-    && apt-get update && apt-get install -y --no-install-recommends \
-        ca-certificates curl libopenblas0
+    && apt-get update && apt-get install -y --no-install-recommends ca-certificates curl
 
 COPY --from=build /bin/ollama /usr/bin/ollama
 COPY --from=build /build/dist/lib/ollama /usr/lib/ollama
