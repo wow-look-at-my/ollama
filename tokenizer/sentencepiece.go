@@ -12,6 +12,11 @@ import (
 
 const spmWhitespaceSep = "▁"
 
+type spmNode struct {
+	p, n  int
+	runes []rune
+}
+
 type SentencePiece struct {
 	maxTokenLen int
 	vocab       *Vocabulary
@@ -98,9 +103,9 @@ func (spm SentencePiece) Encode(s string, addSpecial bool) ([]int32, error) {
 		heap.Init(q)
 
 		runes := []rune(text)
-		merges := make([]merge, len(runes))
+		merges := make([]spmNode, len(runes))
 		for r := range runes {
-			merges[r] = merge{
+			merges[r] = spmNode{
 				p:     r - 1,
 				n:     r + 1,
 				runes: []rune{runes[r]},

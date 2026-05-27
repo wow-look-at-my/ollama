@@ -217,6 +217,58 @@ func IsSafetensorsModelDir(dir string) bool {
 	return false
 }
 
+// knownAssistantArchitectures lists HuggingFace architectures that are MTP
+// assistant/drafter models. When one of these is found in a sibling directory,
+// it is automatically bundled with the target model.
+var knownAssistantArchitectures = map[string]struct{}{
+	"Gemma4AssistantForCausalLM": {},
+	"gemma4_assistant":           {},
+}
+
+// DetectAssistantDir checks whether the target model directory has a companion
+// MTP assistant model in a sibling directory. It follows the HuggingFace naming
+// convention where the assistant lives in a directory named "{target}-assistant".
+// Returns the path to the assistant directory, or "" if none is found.
+func DetectAssistantDir(modelDir string) string {
+	absDir, err := filepath.Abs(modelDir)
+	if err != nil {
+		return ""
+	}
+
+	candidateName := filepath.Base(absDir) + "-assistant"
+	candidate := filepath.Join(filepath.Dir(absDir), candidateName)
+	if isAssistantModelDir(candidate) {
+		return candidate
+	}
+	return ""
+}
+
+// isAssistantModelDir checks if a directory contains a safetensors model with a
+// known assistant architecture.
+func isAssistantModelDir(dir string) bool {
+	if !IsSafetensorsModelDir(dir) {
+		return false
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "config.json"))
+	if err != nil {
+		return false
+	}
+	var cfg struct {
+		Architectures []string `json:"architectures"`
+		ModelType     string   `json:"model_type"`
+	}
+	if json.Unmarshal(data, &cfg) != nil {
+		return false
+	}
+	for _, arch := range cfg.Architectures {
+		if _, ok := knownAssistantArchitectures[arch]; ok {
+			return true
+		}
+	}
+	_, ok := knownAssistantArchitectures[cfg.ModelType]
+	return ok
+}
+
 // LayerInfo holds metadata for a created layer.
 type LayerInfo struct {
 	Digest    string
