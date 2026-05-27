@@ -13,28 +13,33 @@ permissions:
   actions: read
 
 jobs:
-  # TODO: Replace this job with real build outputs.
-  # Real builds should produce files named ollama_{os}_{arch} (e.g. ollama_linux_amd64,
-  # ollama_darwin_arm64, ollama_windows_amd64.exe) and upload them as a 'go-build' artifact.
-  # The linux-build job in release.yaml is the model to adapt.
-  dummy-files:
-    name: Create dummy artifacts (practice run)
+  build:
+    name: Build linux/amd64
     runs-on: ubuntu-latest
     steps:
-      - name: Create dummy artifacts
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: ollama:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Extract binary
         run: |
-          mkdir -p artifacts
-          for target in linux_amd64 linux_arm64 darwin_amd64 darwin_arm64; do
-            echo "dummy $target $GITHUB_SHA" > artifacts/ollama_${target}
-          done
-          echo "dummy windows_amd64 $GITHUB_SHA" > artifacts/ollama_windows_amd64.exe
+          mkdir -p dist
+          docker create --name extract ollama:${{ github.sha }}
+          docker cp extract:/usr/bin/ollama dist/ollama_linux_amd64
+          docker rm extract
       - uses: actions/upload-artifact@v4
         with:
           name: go-build
-          path: artifacts/
+          path: dist/
 
   publish:
-    needs: dummy-files
+    needs: build
     runs-on: ubuntu-latest
     steps:
       - uses: wow-look-at-my/buildhost/.github/actions/buildhost-publish@master
