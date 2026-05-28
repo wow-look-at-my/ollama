@@ -68,6 +68,7 @@ type Sequence struct {
 	// tokens that have been generated but not returned yet (e.g. for stop sequences)
 	pendingResponses []string
 
+
 	// logprobs for tokens that haven't been returned yet
 	pendingLogprobs []llm.Logprob
 
@@ -817,10 +818,12 @@ func (s *Server) computeBatch(activeBatch batchState) {
 		// draft and verify additional tokens in one cycle.
 		if hiddenFloats != nil && isMTPEligible(s.model, seq) {
 			position := int32(len(seq.cache.Inputs) + len(seq.pendingInputs) - 1)
-			acceptedDrafts, nextAfterMTP, mtpOk := runMTPCycle(s, seq, token, logits, hiddenFloats, hiddenDim, position, s.model.(tokenizer.Tokenizer))
+			inputToken := seq.cache.Inputs[len(seq.cache.Inputs)-1].Token
+			acceptedDrafts, nextAfterMTP, mtpOk := runMTPCycle(s, seq, inputToken, token, logits, hiddenFloats, hiddenDim, position, s.model.(tokenizer.Tokenizer))
 			if mtpOk && len(acceptedDrafts) > 0 {
 				tok := s.model.(tokenizer.Tokenizer)
 				hitEOS := false
+				var draftInputs []*input.Input
 				for _, dt := range acceptedDrafts {
 					if tok.Is(dt, tokenizer.SpecialEOS) {
 						s.removeSequence(i, llm.DoneReasonStop)
@@ -833,12 +836,21 @@ func (s *Server) computeBatch(activeBatch batchState) {
 					}
 					seq.pendingResponses = append(seq.pendingResponses, draftPiece)
 					seq.numPredicted++
-					seq.pendingInputs = append(seq.pendingInputs, &input.Input{Token: dt})
+					draftInputs = append(draftInputs, &input.Input{Token: dt})
 				}
 				if hitEOS {
 					continue
 				}
-				nextBatchTokens[i].Token = nextAfterMTP
+				// Decode and add nextAfterMTP's text to response
+				nextPiece, nerr := tok.Decode([]int32{nextAfterMTP})
+				if nerr == nil {
+					seq.pendingResponses = append(seq.pendingResponses, nextPiece)
+					seq.numPredicted++
+				}
+				// Append accepted drafts + nextAfterMTP to seq.inputs for
+				// normal pipeline processing (KV cache update).
+				draftInputs = append(draftInputs, &input.Input{Token: nextAfterMTP})
+				seq.inputs = append(seq.inputs, draftInputs...)
 			}
 		}
 

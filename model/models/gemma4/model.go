@@ -277,29 +277,31 @@ func (m *Model) ForwardMTP(ctx ml.Context, batch input.Batch) (ml.Tensor, ml.Ten
 		logits = logits.Scale(ctx, float64(m.TextModel.TextOptions.finalLogitSoftcap))
 	}
 
+	if t, ok := hidden.(interface{ SetOutput() }); ok {
+		t.SetOutput()
+	}
 	ctx.Forward(logits)
 	ctx.Forward(hidden)
 	return logits, hidden, nil
 }
 
-func (m *Model) MTPDraft(ctx ml.Context, token int32, hidden ml.Tensor, position int32, seqID int, cache kvcache.Cache, maxDraft int) ([]int32, error) {
+func (m *Model) MTPDraft(ctx ml.Context, token int32, hiddenFloats []float32, hiddenDim int, position int32, seqID int, cache kvcache.Cache, maxDraft int) ([]int32, error) {
 	var draftTokens []int32
 	lastToken := token
-	lastHiddenFloats := hidden.Floats()
-	hiddenDim := hidden.Dim(0)
+	lastHiddenFloats := hiddenFloats
 	backend := m.Backend()
 
-	for i := range maxDraft {
+	for range maxDraft {
 		iterCtx := backend.NewContext()
 
 		draftBatch := input.Batch{
 			Inputs:    iterCtx.Input().Empty(ml.DTypeI32, 1),
-			Positions: []int32{position + int32(i)},
+			Positions: []int32{position},
 			Sequences: []int{seqID},
 			Outputs:   iterCtx.Input().FromInts([]int32{0}, 1),
 		}
 
-		if err := cache.StartForward(iterCtx, draftBatch, false); err != nil {
+		if err := cache.StartForward(iterCtx, draftBatch, true); err != nil {
 			iterCtx.Close()
 			return draftTokens, err
 		}
@@ -309,7 +311,7 @@ func (m *Model) MTPDraft(ctx ml.Context, token int32, hidden ml.Tensor, position
 		embedding := m.TextModel.TokenEmbeddings(iterCtx, tokenTensor)
 		inputEmbeds := embedding.Concat(iterCtx, lastHidden, 0)
 
-		logits, projected := m.DraftModel.Draft(iterCtx, inputEmbeds, position+int32(i), cache, &m.TextModel.TextOptions)
+		logits, projected := m.DraftModel.Draft(iterCtx, inputEmbeds, position, cache, &m.TextModel.TextOptions)
 
 		iterCtx.Forward(logits)
 		iterCtx.Forward(projected)
@@ -328,30 +330,38 @@ func (m *Model) MTPDraft(ctx ml.Context, token int32, hidden ml.Tensor, position
 	return draftTokens, nil
 }
 
-func (m *Model) MTPVerify(ctx ml.Context, baseLogits []float32, draftTokens []int32, seqID int, position int32, cache kvcache.Cache) (int, int32, error) {
+func (m *Model) MTPVerify(ctx ml.Context, baseLogits []float32, token int32, draftTokens []int32, seqID int, position int32, cache kvcache.Cache) (int, int32, error) {
 	N := len(draftTokens)
 	vocabSize := len(baseLogits)
 
 	baseChoice := argmaxSlice(baseLogits)
-	slog.Debug("MTPVerify", "baseChoice", baseChoice, "draftTokens", draftTokens)
 	if N == 0 || baseChoice != draftTokens[0] {
 		return 0, baseChoice, nil
 	}
 
-	positions := make([]int32, N)
-	sequences := make([]int, N)
-	outputs := make([]int32, N)
-	for i := range N {
+	// draftTokens[0] matched baseChoice (both predict P+1 = token).
+	// Build verify batch: [token, draftTokens[1], ..., draftTokens[N-1]]
+	// at positions [P+1, P+2, ..., P+N].
+	remaining := draftTokens[1:]
+	M := 1 + len(remaining)
+	verifyInputs := make([]int32, M)
+	verifyInputs[0] = token
+	copy(verifyInputs[1:], remaining)
+
+	positions := make([]int32, M)
+	sequences := make([]int, M)
+	outputs := make([]int32, M)
+	for i := range M {
 		positions[i] = position + 1 + int32(i)
 		sequences[i] = seqID
 		outputs[i] = int32(i)
 	}
 
 	verifyBatch := input.Batch{
-		Inputs:    ctx.Input().FromInts(draftTokens, N),
+		Inputs:    ctx.Input().FromInts(verifyInputs, M),
 		Positions: positions,
 		Sequences: sequences,
-		Outputs:   ctx.Input().FromInts(outputs, N),
+		Outputs:   ctx.Input().FromInts(outputs, M),
 	}
 
 	if err := cache.StartForward(ctx, verifyBatch, false); err != nil {
@@ -371,20 +381,19 @@ func (m *Model) MTPVerify(ctx ml.Context, baseLogits []float32, draftTokens []in
 	ctx.Compute(logitsTensor)
 	allLogits := logitsTensor.Floats()
 
+	// Output[0] at P+1 (input=token) predicts P+2 → compare with remaining[0]=draftTokens[1]
 	accepted := 1
-	for i := 1; i < N; i++ {
-		// verify output at index i-1 predicts position P+1+i — compare
-		// against draftTokens[i] which also predicts position P+i+1.
-		posLogits := allLogits[(i-1)*vocabSize : i*vocabSize]
-		if argmaxSlice(posLogits) != draftTokens[i] {
+	for i := range remaining {
+		posLogits := allLogits[i*vocabSize : (i+1)*vocabSize]
+		if argmaxSlice(posLogits) != remaining[i] {
 			break
 		}
 		accepted++
 	}
 
 	var nextToken int32
-	if accepted == N {
-		lastLogits := allLogits[(N-1)*vocabSize : N*vocabSize]
+	if accepted > len(remaining) {
+		lastLogits := allLogits[len(remaining)*vocabSize : (len(remaining)+1)*vocabSize]
 		nextToken = argmaxSlice(lastLogits)
 	} else {
 		mismatchLogits := allLogits[(accepted-1)*vocabSize : accepted*vocabSize]

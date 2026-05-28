@@ -1,9 +1,6 @@
 package gemma4
 
 import (
-	"log/slog"
-	"math"
-
 	"github.com/ollama/ollama/fs"
 	"github.com/ollama/ollama/kvcache"
 	"github.com/ollama/ollama/ml"
@@ -146,7 +143,6 @@ func (m *DraftModel) Draft(ctx ml.Context, inputEmbeds ml.Tensor, position int32
 
 	for i, layer := range m.Layers {
 		targetLayer := m.mapToTargetLayer(i, targetOpts)
-		slog.Debug("MTPDraft layer", "draftLayer", i, "targetLayer", targetLayer, "isSliding", m.isLayerSliding(i))
 		cache.SetLayer(targetLayer)
 		if wc, ok := cache.(*kvcache.WrapperCache); ok {
 			if m.isLayerSliding(i) {
@@ -220,8 +216,7 @@ func (a *DraftAttention) Forward(ctx ml.Context, layer int, hiddenState, positio
 	}
 	q = nn.RoPE(ctx, q, positions, ropeDims, ropeBase, 1.0, ropeOpts...)
 
-	scale := 1.0 / math.Sqrt(float64(hd))
-	attention := nn.Attention(ctx, q, nil, nil, scale, cache)
+	attention := nn.Attention(ctx, q, nil, nil, 1.0, cache)
 
 	attention = attention.Reshape(ctx, hd*opts.numHeads, batchSize)
 	return a.OProj.Forward(ctx, attention)
