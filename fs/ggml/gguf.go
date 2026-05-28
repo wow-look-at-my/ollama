@@ -12,6 +12,7 @@ import (
 	"runtime"
 	"slices"
 	"strings"
+	"sync/atomic"
 
 	"github.com/ollama/ollama/fs"
 	"golang.org/x/sync/errgroup"
@@ -523,7 +524,7 @@ func writeGGUFArray[S ~[]E, E any](w io.Writer, t uint32, s S) error {
 	return binary.Write(w, binary.LittleEndian, s)
 }
 
-func WriteGGUF(f *os.File, kv fs.Config, ts []*Tensor) error {
+func WriteGGUF(f *os.File, kv fs.Config, ts []*Tensor, progressFn ...func(current, total int)) error {
 	arch := kv.String("general.architecture")
 	if arch == "" {
 		return fmt.Errorf("architecture not set")
@@ -581,11 +582,16 @@ func WriteGGUF(f *os.File, kv fs.Config, ts []*Tensor) error {
 
 	var g errgroup.Group
 	g.SetLimit(runtime.GOMAXPROCS(0))
+	var completed atomic.Int64
+	total := len(ts)
 	// TODO consider reducing if tensors size * gomaxprocs is larger than free memory
 	for _, t := range ts {
 		w := io.NewOffsetWriter(f, offset+int64(t.Offset))
 		g.Go(func() error {
 			_, err := t.WriteTo(w)
+			if err == nil && len(progressFn) > 0 {
+				progressFn[0](int(completed.Add(1)), total)
+			}
 			return err
 		})
 	}

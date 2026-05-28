@@ -214,7 +214,7 @@ type AdapterConverter interface {
 	Replacements() []string
 }
 
-func ConvertAdapter(fsys fs.FS, f *os.File, baseKV ofs.Config) error {
+func ConvertAdapter(fsys fs.FS, f *os.File, baseKV ofs.Config, progressFn ...func(current, total int)) error {
 	bts, err := fs.ReadFile(fsys, "adapter_config.json")
 	if err != nil {
 		return err
@@ -249,7 +249,7 @@ func ConvertAdapter(fsys fs.FS, f *os.File, baseKV ofs.Config) error {
 		return err
 	}
 
-	return writeFile(f, conv.KV(baseKV), conv.Tensors(ts))
+	return writeFile(f, conv.KV(baseKV), conv.Tensors(ts), progressFn...)
 }
 
 func LoadModelMetadata(fsys fs.FS) (ModelKV, *Tokenizer, error) {
@@ -375,7 +375,7 @@ func LoadModelMetadata(fsys fs.FS) (ModelKV, *Tokenizer, error) {
 // and files it finds in the input path.
 // Supported input model formats include safetensors.
 // Supported input tokenizers files include tokenizer.json (preferred) and tokenizer.model.
-func ConvertModel(fsys fs.FS, f *os.File) error {
+func ConvertModel(fsys fs.FS, f *os.File, progressFn ...func(current, total int)) error {
 	kv, t, err := LoadModelMetadata(fsys)
 	if err != nil {
 		return err
@@ -387,10 +387,10 @@ func ConvertModel(fsys fs.FS, f *os.File) error {
 		return err
 	}
 
-	return writeFile(f, conv.KV(t), conv.Tensors(ts))
+	return writeFile(f, conv.KV(t), conv.Tensors(ts), progressFn...)
 }
 
-func writeFile(f *os.File, kv KV, ts []*ggml.Tensor) error {
+func writeFile(f *os.File, kv KV, ts []*ggml.Tensor, progressFn ...func(current, total int)) error {
 	for k, v := range sourceTensorKV(ts) {
 		kv[k] = v
 	}
@@ -399,5 +399,5 @@ func writeFile(f *os.File, kv KV, ts []*ggml.Tensor) error {
 		ts[i].Shape = slices.Clone(ts[i].Shape)
 		slices.Reverse(ts[i].Shape)
 	}
-	return ggml.WriteGGUF(f, kv, ts)
+	return ggml.WriteGGUF(f, kv, ts, progressFn...)
 }

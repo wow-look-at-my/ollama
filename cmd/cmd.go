@@ -396,6 +396,10 @@ func CreateHandler(cmd *cobra.Command, args []string) error {
 			p.Add(status, spinner)
 		}
 
+		if resp.Digest == "" && resp.Total > 0 {
+			spinner.SetMessage(fmt.Sprintf("%s (%d/%d)", resp.Status, resp.Completed, resp.Total))
+		}
+
 		return nil
 	}
 
@@ -428,11 +432,11 @@ func createBlob(cmd *cobra.Command, client *api.Client, path string, digest stri
 	}
 	fileSize := fileInfo.Size()
 
+	filename := filepath.Base(path)
+	bar := progress.NewBar(fmt.Sprintf("copying %s", filename), fileSize, 0)
+	p.Add(digest, bar)
+
 	var pw progressWriter
-	status := fmt.Sprintf("copying file %s 0%%", digest)
-	spinner := progress.NewSpinner(status)
-	p.Add(status, spinner)
-	defer spinner.Stop()
 
 	done := make(chan struct{})
 	defer close(done)
@@ -443,9 +447,9 @@ func createBlob(cmd *cobra.Command, client *api.Client, path string, digest stri
 		for {
 			select {
 			case <-ticker.C:
-				spinner.SetMessage(fmt.Sprintf("copying file %s %d%%", digest, int(100*pw.n.Load()/fileSize)))
+				bar.Set(pw.n.Load())
 			case <-done:
-				spinner.SetMessage(fmt.Sprintf("copying file %s 100%%", digest))
+				bar.Set(fileSize)
 				return
 			}
 		}
