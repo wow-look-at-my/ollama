@@ -307,9 +307,9 @@ func TestSchedRequestsMultipleLoadedModels(t *testing.T) {
 	b := newScenarioRequest(t, ctx, "model-b-10g-gpu", 10*format.GigaByte, nil, map[ml.DeviceID]uint64{{Library: "Metal"}: 10 * format.GigaByte})
 	b.req.sessionDuration = &api.Duration{Duration: 5 * time.Millisecond}
 	c := newScenarioRequest(t, ctx, "model-c-10g-cpu", 10*format.GigaByte, nil, nil /* No GPU load */)
-	c.req.opts.NumGPU = 0                                                                          // CPU load, will be allowed
-	c.req.sessionDuration = &api.Duration{Duration: 20 * time.Millisecond}                        // longer than b so scheduler picks b to unload (b frees GPU memory for d)
-	b.req.sessionDuration = &api.Duration{Duration: 10 * time.Millisecond}                        // shorter than c so scheduler picks b first
+	c.req.opts.NumGPU = 0                                                                                                                         // CPU load, will be allowed
+	c.req.sessionDuration = &api.Duration{Duration: 20 * time.Millisecond}                                                                        // longer than b so scheduler picks b to unload (b frees GPU memory for d)
+	b.req.sessionDuration = &api.Duration{Duration: 10 * time.Millisecond}                                                                        // shorter than c so scheduler picks b first
 	d := newScenarioRequest(t, ctx, "model-d-10g-gpu", 13*format.GigaByte, nil, map[ml.DeviceID]uint64{{Library: "Metal"}: 13 * format.GigaByte}) // Needs prior unloaded
 
 	s.newServerFn = a.newServer
