@@ -240,7 +240,10 @@ func ConvertAdapter(fsys fs.FS, f *os.File, baseKV ofs.Config) error {
 		return errors.New("unsupported architecture")
 	}
 
-	ts, err := parseTensors(fsys, strings.NewReplacer(conv.Replacements()...))
+	ts, cleanup, err := parseTensors(fsys, strings.NewReplacer(conv.Replacements()...))
+	if cleanup != nil {
+		defer cleanup()
+	}
 	if err != nil {
 		return err
 	}
@@ -382,7 +385,10 @@ func ConvertModel(fsys fs.FS, f *os.File) error {
 	}
 	conv := kv.(ModelConverter)
 
-	ts, err := parseTensors(fsys, strings.NewReplacer(conv.Replacements()...))
+	ts, cleanup, err := parseTensors(fsys, strings.NewReplacer(conv.Replacements()...))
+	if cleanup != nil {
+		defer cleanup()
+	}
 	if err != nil {
 		return err
 	}

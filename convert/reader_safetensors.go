@@ -24,33 +24,39 @@ type safetensorMetadata struct {
 	Offsets []int64  `json:"data_offsets"`
 }
 
-func parseSafetensors(fsys fs.FS, replacer *strings.Replacer, ps ...string) ([]Tensor, error) {
+func parseSafetensors(fsys fs.FS, replacer *strings.Replacer, ps ...string) ([]Tensor, func(), error) {
 	fp8Block, err := safetensorsFP8BlockSize(fsys)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
+
+	mmaps, cleanup := tryMmapFiles(fsys, ps)
 
 	var ts []Tensor
 	for _, p := range ps {
 		f, err := fsys.Open(p)
 		if err != nil {
-			return nil, err
+			cleanup()
+			return nil, nil, err
 		}
 		defer f.Close()
 
 		var n int64
 		if err := binary.Read(f, binary.LittleEndian, &n); err != nil {
-			return nil, err
+			cleanup()
+			return nil, nil, err
 		}
 
 		b := bytes.NewBuffer(make([]byte, 0, n))
 		if _, err = io.CopyN(b, f, n); err != nil {
-			return nil, err
+			cleanup()
+			return nil, nil, err
 		}
 
 		var headers map[string]safetensorMetadata
 		if err := json.NewDecoder(b).Decode(&headers); err != nil {
-			return nil, err
+			cleanup()
+			return nil, nil, err
 		}
 
 		keys := slices.Sorted(maps.Keys(headers))
@@ -59,7 +65,8 @@ func parseSafetensors(fsys fs.FS, replacer *strings.Replacer, ps ...string) ([]T
 
 		fp8Scales, err := collectSafetensorsFP8Scales(n, headers)
 		if err != nil {
-			return nil, err
+			cleanup()
+			return nil, nil, err
 		}
 
 		for _, key := range keys {
@@ -77,17 +84,20 @@ func parseSafetensors(fsys fs.FS, replacer *strings.Replacer, ps ...string) ([]T
 				var scale *safetensorScale
 				if value.Type == "F8_E4M3" {
 					if !fp8Block.ok {
-						return nil, fmt.Errorf("missing fp8 block size metadata for tensor %q", key)
+						cleanup()
+						return nil, nil, fmt.Errorf("missing fp8 block size metadata for tensor %q", key)
 					}
 					scale = fp8Scales.byWeight[key]
 					if scale == nil {
-						return nil, fmt.Errorf("missing fp8 scale companion for tensor %q", key)
+						cleanup()
+						return nil, nil, fmt.Errorf("missing fp8 scale companion for tensor %q", key)
 					}
 				}
 
 				ggufName := replacer.Replace(key)
 				if _, ok := names[ggufName]; ok {
-					return nil, fmt.Errorf("duplicate tensor name '%s' was found for this model", ggufName)
+					cleanup()
+					return nil, nil, fmt.Errorf("duplicate tensor name '%s' was found for this model", ggufName)
 				}
 				names[ggufName] = struct{}{}
 				ts = append(ts, safetensor{
@@ -98,6 +108,7 @@ func parseSafetensors(fsys fs.FS, replacer *strings.Replacer, ps ...string) ([]T
 					size:     safetensorsPad(n, value.Offsets[1]) - safetensorsPad(n, value.Offsets[0]),
 					scale:    scale,
 					fp8Block: fp8Block,
+					mmap:     mmaps[p],
 					tensorBase: &tensorBase{
 						name:  ggufName,
 						shape: value.Shape,
@@ -107,7 +118,7 @@ func parseSafetensors(fsys fs.FS, replacer *strings.Replacer, ps ...string) ([]T
 		}
 	}
 
-	return ts, nil
+	return ts, cleanup, nil
 }
 
 // safetensorsPad returns the padded size of the safetensors file given a length n and offset s
@@ -131,6 +142,7 @@ type safetensor struct {
 	size     int64
 	scale    *safetensorScale
 	fp8Block safetensorFP8BlockSize
+	mmap     *mmapRegion
 	*tensorBase
 }
 
@@ -164,6 +176,7 @@ func (st safetensor) Clone() Tensor {
 		size:     st.size,
 		scale:    st.scale.Clone(),
 		fp8Block: st.fp8Block,
+		mmap:     st.mmap,
 		tensorBase: &tensorBase{
 			name:     st.name,
 			repacker: st.repacker,
@@ -185,7 +198,37 @@ func (ss *safetensorScale) Clone() *safetensorScale {
 	}
 }
 
+const convertChunkElems = 1 << 20 // 1M elements per chunk (~4MB for F32)
+
 func (st safetensor) WriteTo(w io.Writer) (int64, error) {
+	passthrough := (st.repacker == nil) &&
+		((st.dtype == "F32" && st.Kind() == tensorKindFP32) ||
+			(st.dtype == "F16" && st.Kind() == tensorKindFP16) ||
+			(st.dtype == "BF16" && st.Kind() == tensorKindBF16) ||
+			(st.dtype == "U8"))
+
+	if st.mmap != nil && len(st.mmap.data) > 0 && st.offset+st.size <= int64(len(st.mmap.data)) {
+		return st.writeFromMmap(w, passthrough)
+	}
+	return st.writeFromFile(w, passthrough)
+}
+
+func (st safetensor) writeFromMmap(w io.Writer, passthrough bool) (int64, error) {
+	data := st.mmap.data[st.offset : st.offset+st.size]
+
+	if passthrough {
+		n, err := w.Write(data)
+		return int64(n), err
+	}
+
+	if st.repacker == nil && st.dtype != "F8_E4M3" {
+		return st.writeChunked(w, data)
+	}
+
+	return st.writeFullBuffer(w, bytes.NewReader(data))
+}
+
+func (st safetensor) writeFromFile(w io.Writer, passthrough bool) (int64, error) {
 	f, err := st.fs.Open(st.path)
 	if err != nil {
 		return 0, err
@@ -208,16 +251,93 @@ func (st safetensor) WriteTo(w io.Writer) (int64, error) {
 	}
 
 	br := bufio.NewReaderSize(r, min(32<<10, int(st.size)))
-	// special case when input and output are same type and the
-	// tensor doesn't need repacking
-	if (st.repacker == nil) &&
-		((st.dtype == "F32" && st.Kind() == tensorKindFP32) ||
-			(st.dtype == "F16" && st.Kind() == tensorKindFP16) ||
-			(st.dtype == "U8")) {
+
+	if passthrough {
 		return io.CopyN(w, br, st.size)
 	}
 
+	return st.writeFullBuffer(w, br)
+}
+
+func (st safetensor) writeChunked(w io.Writer, data []byte) (int64, error) {
+	var written int64
+
+	switch st.dtype {
+	case "F32":
+		totalElems := len(data) / 4
+		chunkBuf := make([]float32, min(convertChunkElems, totalElems))
+		for start := 0; start < totalElems; start += convertChunkElems {
+			end := min(start+convertChunkElems, totalElems)
+			chunk := chunkBuf[:end-start]
+			for i := range chunk {
+				chunk[i] = math.Float32frombits(binary.LittleEndian.Uint32(data[(start+i)*4:]))
+			}
+			n, err := writeOutputChunk(w, chunk, st.Kind())
+			written += n
+			if err != nil {
+				return written, err
+			}
+		}
+	case "F16":
+		totalElems := len(data) / 2
+		chunkBuf := make([]float32, min(convertChunkElems, totalElems))
+		for start := 0; start < totalElems; start += convertChunkElems {
+			end := min(start+convertChunkElems, totalElems)
+			chunk := chunkBuf[:end-start]
+			for i := range chunk {
+				chunk[i] = float16.Frombits(binary.LittleEndian.Uint16(data[(start+i)*2:])).Float32()
+			}
+			n, err := writeOutputChunk(w, chunk, st.Kind())
+			written += n
+			if err != nil {
+				return written, err
+			}
+		}
+	case "BF16":
+		totalElems := len(data) / 2
+		chunkBuf := make([]float32, min(convertChunkElems, totalElems))
+		for start := 0; start < totalElems; start += convertChunkElems {
+			end := min(start+convertChunkElems, totalElems)
+			chunkBytes := data[start*2 : end*2]
+			chunk := chunkBuf[:end-start]
+			decoded := bfloat16.DecodeFloat32(chunkBytes)
+			copy(chunk, decoded)
+			n, err := writeOutputChunk(w, chunk, st.Kind())
+			written += n
+			if err != nil {
+				return written, err
+			}
+		}
+	default:
+		return 0, fmt.Errorf("unknown data type for chunked conversion: %s", st.dtype)
+	}
+
+	return written, nil
+}
+
+func writeOutputChunk(w io.Writer, f32s []float32, kind uint32) (int64, error) {
+	switch kind {
+	case tensorKindFP32:
+		return int64(len(f32s) * 4), binary.Write(w, binary.LittleEndian, f32s)
+	case tensorKindFP16:
+		f16s := make([]uint16, len(f32s))
+		for i := range f32s {
+			f16s[i] = float16.Fromfloat32(f32s[i]).Bits()
+		}
+		return int64(len(f16s) * 2), binary.Write(w, binary.LittleEndian, f16s)
+	case tensorKindBF16:
+		u8s := bfloat16.EncodeFloat32(f32s)
+		return int64(len(u8s)), binary.Write(w, binary.LittleEndian, u8s)
+	default:
+		return 0, fmt.Errorf("unknown storage type: %d", kind)
+	}
+}
+
+func (st safetensor) writeFullBuffer(w io.Writer, r io.Reader) (int64, error) {
+	br := bufio.NewReaderSize(r, min(32<<10, int(st.size)))
+
 	var f32s []float32
+	var err error
 	switch st.dtype {
 	case "F32":
 		f32s = make([]float32, st.size/4)
@@ -234,7 +354,6 @@ func (st safetensor) WriteTo(w io.Writer) (int64, error) {
 		for i := range u16s {
 			f32s[i] = float16.Frombits(u16s[i]).Float32()
 		}
-
 	case "BF16":
 		u8s := make([]uint8, st.size)
 		if err = binary.Read(br, binary.LittleEndian, u8s); err != nil {
@@ -263,22 +382,7 @@ func (st safetensor) WriteTo(w io.Writer) (int64, error) {
 		}
 	}
 
-	switch st.Kind() {
-	case tensorKindFP32:
-		return int64(len(f32s) * 4), binary.Write(w, binary.LittleEndian, f32s)
-	case tensorKindFP16:
-		f16s := make([]uint16, len(f32s))
-		for i := range f32s {
-			f16s[i] = float16.Fromfloat32(f32s[i]).Bits()
-		}
-
-		return int64(len(f16s) * 2), binary.Write(w, binary.LittleEndian, f16s)
-	case tensorKindBF16:
-		u8s := bfloat16.EncodeFloat32(f32s)
-		return int64(len(u8s)), binary.Write(w, binary.LittleEndian, u8s)
-	default:
-		return 0, fmt.Errorf("unknown storage type: %d", st.Kind())
-	}
+	return writeOutputChunk(w, f32s, st.Kind())
 }
 
 type safetensorsFP8Scales struct {
@@ -517,14 +621,20 @@ func (st safetensor) decodeFP8E4M3(data []byte) ([]float32, error) {
 }
 
 func (st safetensor) readScale() ([]float32, error) {
-	r, err := st.sectionReader(st.scale.offset, st.scale.size)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read fp8 scale tensor %q: %w", st.scale.name, err)
+	var br *bufio.Reader
+	if st.mmap != nil && len(st.mmap.data) > 0 && st.scale.offset+st.scale.size <= int64(len(st.mmap.data)) {
+		data := st.mmap.data[st.scale.offset : st.scale.offset+st.scale.size]
+		br = bufio.NewReaderSize(bytes.NewReader(data), min(32<<10, int(st.scale.size)))
+	} else {
+		r, err := st.sectionReader(st.scale.offset, st.scale.size)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read fp8 scale tensor %q: %w", st.scale.name, err)
+		}
+		if closer, ok := r.(io.Closer); ok {
+			defer closer.Close()
+		}
+		br = bufio.NewReaderSize(r, min(32<<10, int(st.scale.size)))
 	}
-	if closer, ok := r.(io.Closer); ok {
-		defer closer.Close()
-	}
-	br := bufio.NewReaderSize(r, min(32<<10, int(st.scale.size)))
 
 	switch st.scale.dtype {
 	case "F32":

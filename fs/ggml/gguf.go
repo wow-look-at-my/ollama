@@ -580,8 +580,24 @@ func WriteGGUF(f *os.File, kv fs.Config, ts []*Tensor) error {
 	offset += ggufPadding(offset, int64(alignment))
 
 	var g errgroup.Group
-	g.SetLimit(runtime.GOMAXPROCS(0))
-	// TODO consider reducing if tensors size * gomaxprocs is larger than free memory
+	maxConcurrent := runtime.GOMAXPROCS(0)
+	var maxTensorBytes uint64
+	for _, t := range ts {
+		if s := t.Size(); s > maxTensorBytes {
+			maxTensorBytes = s
+		}
+	}
+	if maxTensorBytes > 0 {
+		const maxConcurrentMem = 2 << 30 // 2GB
+		memPerTensor := maxTensorBytes * 4
+		if limit := int(maxConcurrentMem / memPerTensor); limit > 0 && limit < maxConcurrent {
+			maxConcurrent = limit
+		}
+		if maxConcurrent < 1 {
+			maxConcurrent = 1
+		}
+	}
+	g.SetLimit(maxConcurrent)
 	for _, t := range ts {
 		w := io.NewOffsetWriter(f, offset+int64(t.Offset))
 		g.Go(func() error {
