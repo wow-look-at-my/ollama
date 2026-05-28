@@ -198,8 +198,6 @@ func (ss *safetensorScale) Clone() *safetensorScale {
 	}
 }
 
-const convertChunkElems = 1 << 20 // 1M elements per chunk (~4MB for F32)
-
 func (st safetensor) WriteTo(w io.Writer) (int64, error) {
 	passthrough := (st.repacker == nil) &&
 		((st.dtype == "F32" && st.Kind() == tensorKindFP32) ||
@@ -219,10 +217,6 @@ func (st safetensor) writeFromMmap(w io.Writer, passthrough bool) (int64, error)
 	if passthrough {
 		n, err := w.Write(data)
 		return int64(n), err
-	}
-
-	if st.repacker == nil && st.dtype != "F8_E4M3" {
-		return st.writeChunked(w, data)
 	}
 
 	return st.writeFullBuffer(w, bytes.NewReader(data))
@@ -257,62 +251,6 @@ func (st safetensor) writeFromFile(w io.Writer, passthrough bool) (int64, error)
 	}
 
 	return st.writeFullBuffer(w, br)
-}
-
-func (st safetensor) writeChunked(w io.Writer, data []byte) (int64, error) {
-	var written int64
-
-	switch st.dtype {
-	case "F32":
-		totalElems := len(data) / 4
-		chunkBuf := make([]float32, min(convertChunkElems, totalElems))
-		for start := 0; start < totalElems; start += convertChunkElems {
-			end := min(start+convertChunkElems, totalElems)
-			chunk := chunkBuf[:end-start]
-			for i := range chunk {
-				chunk[i] = math.Float32frombits(binary.LittleEndian.Uint32(data[(start+i)*4:]))
-			}
-			n, err := writeOutputChunk(w, chunk, st.Kind())
-			written += n
-			if err != nil {
-				return written, err
-			}
-		}
-	case "F16":
-		totalElems := len(data) / 2
-		chunkBuf := make([]float32, min(convertChunkElems, totalElems))
-		for start := 0; start < totalElems; start += convertChunkElems {
-			end := min(start+convertChunkElems, totalElems)
-			chunk := chunkBuf[:end-start]
-			for i := range chunk {
-				chunk[i] = float16.Frombits(binary.LittleEndian.Uint16(data[(start+i)*2:])).Float32()
-			}
-			n, err := writeOutputChunk(w, chunk, st.Kind())
-			written += n
-			if err != nil {
-				return written, err
-			}
-		}
-	case "BF16":
-		totalElems := len(data) / 2
-		chunkBuf := make([]float32, min(convertChunkElems, totalElems))
-		for start := 0; start < totalElems; start += convertChunkElems {
-			end := min(start+convertChunkElems, totalElems)
-			chunkBytes := data[start*2 : end*2]
-			chunk := chunkBuf[:end-start]
-			decoded := bfloat16.DecodeFloat32(chunkBytes)
-			copy(chunk, decoded)
-			n, err := writeOutputChunk(w, chunk, st.Kind())
-			written += n
-			if err != nil {
-				return written, err
-			}
-		}
-	default:
-		return 0, fmt.Errorf("unknown data type for chunked conversion: %s", st.dtype)
-	}
-
-	return written, nil
 }
 
 func writeOutputChunk(w io.Writer, f32s []float32, kind uint32) (int64, error) {
