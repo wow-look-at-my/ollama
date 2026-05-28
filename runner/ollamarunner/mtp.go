@@ -4,7 +4,6 @@ import (
 	"log/slog"
 
 	"github.com/ollama/ollama/kvcache"
-	"github.com/ollama/ollama/ml"
 	"github.com/ollama/ollama/model"
 	"github.com/ollama/ollama/tokenizer"
 )
@@ -22,6 +21,7 @@ func isMTPEligible(m model.Model, seq *Sequence) bool {
 	if seq.logprobs {
 		return false
 	}
+	slog.Debug("MTP eligible, attempting draft cycle")
 	return true
 }
 
@@ -30,7 +30,8 @@ func runMTPCycle(
 	seq *Sequence,
 	token int32,
 	logits []float32,
-	hidden ml.Tensor,
+	hiddenFloats []float32,
+	hiddenDim int,
 	position int32,
 	tok tokenizer.Tokenizer,
 ) (acceptedTokens []int32, nextToken int32, ok bool) {
@@ -59,6 +60,8 @@ func runMTPCycle(
 
 	draftCtx := s.model.Backend().NewContext()
 	defer draftCtx.Close()
+
+	hidden := draftCtx.Input().FromFloats(hiddenFloats, hiddenDim)
 
 	draftTokens, err := mtpModel.MTPDraft(draftCtx, token, hidden, position, cache, maxDraft)
 	if err != nil {

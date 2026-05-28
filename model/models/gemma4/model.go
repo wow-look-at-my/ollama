@@ -278,29 +278,51 @@ func (m *Model) ForwardMTP(ctx ml.Context, batch input.Batch) (ml.Tensor, ml.Ten
 	}
 
 	ctx.Forward(logits)
+	ctx.Forward(hidden)
 	return logits, hidden, nil
 }
 
 func (m *Model) MTPDraft(ctx ml.Context, token int32, hidden ml.Tensor, position int32, cache kvcache.Cache, maxDraft int) ([]int32, error) {
 	var draftTokens []int32
 	lastToken := token
-	lastHidden := hidden
+	lastHiddenFloats := hidden.Floats()
+	hiddenDim := hidden.Dim(0)
+	backend := m.Backend()
 
-	for range maxDraft {
-		tokenTensor := ctx.Input().FromInts([]int32{lastToken}, 1)
-		embedding := m.TextModel.TokenEmbeddings(ctx, tokenTensor)
-		inputEmbeds := embedding.Concat(ctx, lastHidden, 0)
+	for i := range maxDraft {
+		iterCtx := backend.NewContext()
 
-		logits, projected := m.DraftModel.Draft(ctx, inputEmbeds, position, cache, &m.TextModel.TextOptions)
+		draftBatch := input.Batch{
+			Inputs:    iterCtx.Input().Empty(ml.DTypeI32, 1),
+			Positions: []int32{position + int32(i)},
+			Sequences: []int{0},
+			Outputs:   iterCtx.Input().FromInts([]int32{0}, 1),
+		}
 
-		ctx.Forward(logits)
-		ctx.Compute(logits)
+		if err := cache.StartForward(iterCtx, draftBatch, false); err != nil {
+			iterCtx.Close()
+			return draftTokens, err
+		}
+
+		lastHidden := iterCtx.Input().FromFloats(lastHiddenFloats, hiddenDim)
+		tokenTensor := iterCtx.Input().FromInts([]int32{lastToken}, 1)
+		embedding := m.TextModel.TokenEmbeddings(iterCtx, tokenTensor)
+		inputEmbeds := embedding.Concat(iterCtx, lastHidden, 0)
+
+		logits, projected := m.DraftModel.Draft(iterCtx, inputEmbeds, position+int32(i), cache, &m.TextModel.TextOptions)
+
+		iterCtx.Forward(logits)
+		iterCtx.Forward(projected)
+		iterCtx.Compute(logits, projected)
+
 		logitValues := logits.Floats()
+		lastHiddenFloats = projected.Floats()
+
+		iterCtx.Close()
 
 		nextToken := argmaxSlice(logitValues)
 		draftTokens = append(draftTokens, nextToken)
 		lastToken = nextToken
-		lastHidden = projected
 	}
 
 	return draftTokens, nil

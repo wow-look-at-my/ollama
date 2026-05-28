@@ -739,6 +739,14 @@ func (s *Server) computeBatch(activeBatch batchState) {
 		computeTensors...)
 
 	outputs := activeBatch.modelOutput.Floats()
+
+	var hiddenFloats []float32
+	var hiddenDim int
+	if activeBatch.hiddenOutput != nil {
+		hiddenFloats = activeBatch.hiddenOutput.Floats()
+		hiddenDim = activeBatch.hiddenOutput.Dim(0)
+	}
+
 	t := time.Now()
 
 	logutil.Trace("computeBatch: logits ready", "batchID", activeBatch.id)
@@ -807,9 +815,9 @@ func (s *Server) computeBatch(activeBatch batchState) {
 
 		// MTP: if the model supports multi-token prediction and conditions are met,
 		// draft and verify additional tokens in one cycle.
-		if activeBatch.hiddenOutput != nil && isMTPEligible(s.model, seq) {
+		if hiddenFloats != nil && isMTPEligible(s.model, seq) {
 			position := int32(len(seq.cache.Inputs) + len(seq.pendingInputs) - 1)
-			acceptedDrafts, nextAfterMTP, mtpOk := runMTPCycle(s, seq, token, logits, activeBatch.hiddenOutput, position, s.model.(tokenizer.Tokenizer))
+			acceptedDrafts, nextAfterMTP, mtpOk := runMTPCycle(s, seq, token, logits, hiddenFloats, hiddenDim, position, s.model.(tokenizer.Tokenizer))
 			if mtpOk && len(acceptedDrafts) > 0 {
 				tok := s.model.(tokenizer.Tokenizer)
 				hitEOS := false
