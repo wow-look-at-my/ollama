@@ -53,17 +53,17 @@ func runMTPCycle(
 
 	cache := s.model.Config().Cache
 	wc, isWrapper := cache.(*kvcache.WrapperCache)
+	seqID := seq.cache.Id
 
+	// Draft phase: speculation tracks phantom cells so they can be rolled back.
 	if isWrapper {
-		wc.BeginSpeculation(seq.cache.Id)
+		wc.BeginSpeculation(seqID)
 	}
 
 	draftCtx := s.model.Backend().NewContext()
-	defer draftCtx.Close()
-
 	hidden := draftCtx.Input().FromFloats(hiddenFloats, hiddenDim)
-
-	draftTokens, err := mtpModel.MTPDraft(draftCtx, token, hidden, position, cache, maxDraft)
+	draftTokens, err := mtpModel.MTPDraft(draftCtx, token, hidden, position, seqID, cache, maxDraft)
+	draftCtx.Close()
 	if err != nil {
 		slog.Warn("MTP draft failed", "error", err)
 		if isWrapper {
@@ -79,10 +79,15 @@ func runMTPCycle(
 		return nil, token, false
 	}
 
-	verifyCtx := s.model.Backend().NewContext()
-	defer verifyCtx.Close()
+	// Roll back draft's phantom cells, then begin fresh speculation for verify.
+	if isWrapper {
+		wc.Rollback()
+		wc.BeginSpeculation(seqID)
+	}
 
-	accepted, nextAfter, err := mtpModel.MTPVerify(verifyCtx, logits, draftTokens, seq.cache.Id, position, cache)
+	verifyCtx := s.model.Backend().NewContext()
+	accepted, nextAfter, err := mtpModel.MTPVerify(verifyCtx, logits, draftTokens, seqID, position, cache)
+	verifyCtx.Close()
 	if err != nil {
 		slog.Warn("MTP verification failed", "error", err)
 		if isWrapper {

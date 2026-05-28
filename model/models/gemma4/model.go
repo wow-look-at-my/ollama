@@ -282,7 +282,7 @@ func (m *Model) ForwardMTP(ctx ml.Context, batch input.Batch) (ml.Tensor, ml.Ten
 	return logits, hidden, nil
 }
 
-func (m *Model) MTPDraft(ctx ml.Context, token int32, hidden ml.Tensor, position int32, cache kvcache.Cache, maxDraft int) ([]int32, error) {
+func (m *Model) MTPDraft(ctx ml.Context, token int32, hidden ml.Tensor, position int32, seqID int, cache kvcache.Cache, maxDraft int) ([]int32, error) {
 	var draftTokens []int32
 	lastToken := token
 	lastHiddenFloats := hidden.Floats()
@@ -295,7 +295,7 @@ func (m *Model) MTPDraft(ctx ml.Context, token int32, hidden ml.Tensor, position
 		draftBatch := input.Batch{
 			Inputs:    iterCtx.Input().Empty(ml.DTypeI32, 1),
 			Positions: []int32{position + int32(i)},
-			Sequences: []int{0},
+			Sequences: []int{seqID},
 			Outputs:   iterCtx.Input().FromInts([]int32{0}, 1),
 		}
 
@@ -333,6 +333,7 @@ func (m *Model) MTPVerify(ctx ml.Context, baseLogits []float32, draftTokens []in
 	vocabSize := len(baseLogits)
 
 	baseChoice := argmaxSlice(baseLogits)
+	slog.Debug("MTPVerify", "baseChoice", baseChoice, "draftTokens", draftTokens)
 	if N == 0 || baseChoice != draftTokens[0] {
 		return 0, baseChoice, nil
 	}
@@ -372,7 +373,9 @@ func (m *Model) MTPVerify(ctx ml.Context, baseLogits []float32, draftTokens []in
 
 	accepted := 1
 	for i := 1; i < N; i++ {
-		posLogits := allLogits[i*vocabSize : (i+1)*vocabSize]
+		// verify output at index i-1 predicts position P+1+i — compare
+		// against draftTokens[i] which also predicts position P+i+1.
+		posLogits := allLogits[(i-1)*vocabSize : i*vocabSize]
 		if argmaxSlice(posLogits) != draftTokens[i] {
 			break
 		}
@@ -384,7 +387,7 @@ func (m *Model) MTPVerify(ctx ml.Context, baseLogits []float32, draftTokens []in
 		lastLogits := allLogits[(N-1)*vocabSize : N*vocabSize]
 		nextToken = argmaxSlice(lastLogits)
 	} else {
-		mismatchLogits := allLogits[accepted*vocabSize : (accepted+1)*vocabSize]
+		mismatchLogits := allLogits[(accepted-1)*vocabSize : accepted*vocabSize]
 		nextToken = argmaxSlice(mismatchLogits)
 	}
 

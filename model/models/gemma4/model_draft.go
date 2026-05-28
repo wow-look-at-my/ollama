@@ -1,6 +1,7 @@
 package gemma4
 
 import (
+	"log/slog"
 	"math"
 
 	"github.com/ollama/ollama/fs"
@@ -144,10 +145,8 @@ func (m *DraftModel) Draft(ctx ml.Context, inputEmbeds ml.Tensor, position int32
 	h := m.PreProjection.Forward(ctx, inputEmbeds)
 
 	for i, layer := range m.Layers {
-		// Point the cache at the corresponding target layer for KV access.
-		// The draft model's attention is Q-only: it reads K/V from the target's
-		// cache via nn.Attention with nil key/value.
 		targetLayer := m.mapToTargetLayer(i, targetOpts)
+		slog.Debug("MTPDraft layer", "draftLayer", i, "targetLayer", targetLayer, "isSliding", m.isLayerSliding(i))
 		cache.SetLayer(targetLayer)
 		if wc, ok := cache.(*kvcache.WrapperCache); ok {
 			if m.isLayerSliding(i) {
