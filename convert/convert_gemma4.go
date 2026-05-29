@@ -585,20 +585,20 @@ func (p *gemma4Model) Replacements() []string {
 }
 
 type gemma4AssistantConfig struct {
-	UseOrderedEmbeddings       bool   `json:"use_ordered_embeddings"`
-	NumCentroids               uint32 `json:"num_centroids"`
-	CentroidIntermediateTopK   uint32 `json:"centroid_intermediate_top_k"`
-	TextConfig                 struct {
-		NumHiddenLayers     uint32   `json:"num_hidden_layers"`
-		HiddenSize          uint32   `json:"hidden_size"`
-		NumAttentionHeads   uint32   `json:"num_attention_heads"`
-		NumKeyValueHeads    uint32   `json:"num_key_value_heads"`
-		HeadDim             uint32   `json:"head_dim"`
-		GlobalHeadDim       uint32   `json:"global_head_dim"`
-		IntermediateSize    uint32   `json:"intermediate_size"`
-		RMSNormEps          float32  `json:"rms_norm_eps"`
-		LayerTypes          []string `json:"layer_types"`
-		RopeParameters      map[string]*struct {
+	UseOrderedEmbeddings     bool   `json:"use_ordered_embeddings"`
+	NumCentroids             uint32 `json:"num_centroids"`
+	CentroidIntermediateTopK uint32 `json:"centroid_intermediate_top_k"`
+	TextConfig               struct {
+		NumHiddenLayers   uint32   `json:"num_hidden_layers"`
+		HiddenSize        uint32   `json:"hidden_size"`
+		NumAttentionHeads uint32   `json:"num_attention_heads"`
+		NumKeyValueHeads  uint32   `json:"num_key_value_heads"`
+		HeadDim           uint32   `json:"head_dim"`
+		GlobalHeadDim     uint32   `json:"global_head_dim"`
+		IntermediateSize  uint32   `json:"intermediate_size"`
+		RMSNormEps        float32  `json:"rms_norm_eps"`
+		LayerTypes        []string `json:"layer_types"`
+		RopeParameters    map[string]*struct {
 			RopeTheta           float32  `json:"rope_theta"`
 			PartialRotaryFactor *float32 `json:"partial_rotary_factor"`
 		} `json:"rope_parameters"`

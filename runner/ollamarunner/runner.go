@@ -68,7 +68,6 @@ type Sequence struct {
 	// tokens that have been generated but not returned yet (e.g. for stop sequences)
 	pendingResponses []string
 
-
 	// logprobs for tokens that haven't been returned yet
 	pendingLogprobs []llm.Logprob
 
