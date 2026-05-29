@@ -32,7 +32,6 @@ jobs:
         with:
           images: ghcr.io/${{ github.repository }}
           tags: |
-            type=raw,value=${{ github.sha }}
             type=ref,event=branch
             type=raw,value=latest,enable={{is_default_branch}}
       - name: Build and push Dockerfile
@@ -50,10 +49,10 @@ jobs:
           cache-from: type=registry,ref=ghcr.io/${{ github.repository }}:buildcache
           cache-to: type=registry,ref=ghcr.io/${{ github.repository }}:buildcache,mode=max
       - name: Verify ollama binary
-        run: docker run --rm ghcr.io/${{ github.repository }}:${{ github.sha }} --version
+        run: docker run --rm ghcr.io/${{ github.repository }}:${{ steps.meta.outputs.version }} --version
       - name: Extract binary
         run: |
-          docker create --name extract ghcr.io/${{ github.repository }}:${{ github.sha }}
+          docker create --name extract ghcr.io/${{ github.repository }}:${{ steps.meta.outputs.version }}
           mkdir -p dist
           docker cp extract:/usr/bin/ollama dist/ollama_linux_amd64
           docker rm extract
