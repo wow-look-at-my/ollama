@@ -14,8 +14,6 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/d4l3k/go-bfloat16"
-	"github.com/x448/float16"
 )
 
 type safetensorMetadata struct {
@@ -259,13 +257,12 @@ func writeOutputChunk(w io.Writer, f32s []float32, kind uint32) (int64, error) {
 		return int64(len(f32s) * 4), binary.Write(w, binary.LittleEndian, f32s)
 	case tensorKindFP16:
 		f16s := make([]uint16, len(f32s))
-		for i := range f32s {
-			f16s[i] = float16.Fromfloat32(f32s[i]).Bits()
-		}
+		convertF32ToF16(f16s, f32s)
 		return int64(len(f16s) * 2), binary.Write(w, binary.LittleEndian, f16s)
 	case tensorKindBF16:
-		u8s := bfloat16.EncodeFloat32(f32s)
-		return int64(len(u8s)), binary.Write(w, binary.LittleEndian, u8s)
+		bf16s := make([]uint16, len(f32s))
+		convertF32ToBF16(bf16s, f32s)
+		return int64(len(bf16s) * 2), binary.Write(w, binary.LittleEndian, bf16s)
 	default:
 		return 0, fmt.Errorf("unknown storage type: %d", kind)
 	}
@@ -289,16 +286,15 @@ func (st safetensor) writeFullBuffer(w io.Writer, r io.Reader) (int64, error) {
 		}
 
 		f32s = make([]float32, len(u16s))
-		for i := range u16s {
-			f32s[i] = float16.Frombits(u16s[i]).Float32()
-		}
+		convertF16ToF32(f32s, u16s)
 	case "BF16":
-		u8s := make([]uint8, st.size)
-		if err = binary.Read(br, binary.LittleEndian, u8s); err != nil {
+		u16s := make([]uint16, st.size/2)
+		if err = binary.Read(br, binary.LittleEndian, u16s); err != nil {
 			return 0, err
 		}
 
-		f32s = bfloat16.DecodeFloat32(u8s)
+		f32s = make([]float32, len(u16s))
+		convertBF16ToF32(f32s, u16s)
 	case "F8_E4M3":
 		u8s := make([]uint8, st.size)
 		if err = binary.Read(br, binary.LittleEndian, u8s); err != nil {
@@ -587,16 +583,16 @@ func (st safetensor) readScale() ([]float32, error) {
 			return nil, err
 		}
 		f32s := make([]float32, len(u16s))
-		for i := range u16s {
-			f32s[i] = float16.Frombits(u16s[i]).Float32()
-		}
+		convertF16ToF32(f32s, u16s)
 		return f32s, nil
 	case "BF16":
-		u8s := make([]uint8, st.scale.size)
-		if err := binary.Read(br, binary.LittleEndian, u8s); err != nil {
+		u16s := make([]uint16, st.scale.size/2)
+		if err := binary.Read(br, binary.LittleEndian, u16s); err != nil {
 			return nil, err
 		}
-		return bfloat16.DecodeFloat32(u8s), nil
+		f32s := make([]float32, len(u16s))
+		convertBF16ToF32(f32s, u16s)
+		return f32s, nil
 	default:
 		return nil, fmt.Errorf("unsupported fp8 scale dtype %q for tensor %q", st.scale.dtype, st.scale.name)
 	}
