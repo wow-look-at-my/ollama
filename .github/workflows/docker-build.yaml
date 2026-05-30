@@ -137,7 +137,7 @@ jobs:
 
       - name: Finalize summary
         if: always()
-        uses: wow-look-at-my/actions/typescript@typescript#latest
+        uses: wow-look-at-my/actions@typescript#latest
         with:
           needs: ${{ toJSON(needs) }}
           script: |
