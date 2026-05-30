@@ -51,9 +51,9 @@ jobs:
           # other. cache-from falls back to the shared :buildcache tag so new
           # branches get a warm start from whatever was last written there.
           cache-from: |
-            type=registry,ref=ghcr.io/${{ github.repository }}:buildcache-${{ github.ref_name }}
+            type=registry,ref=ghcr.io/${{ github.repository }}:buildcache-${{ steps.meta.outputs.version }}
             type=registry,ref=ghcr.io/${{ github.repository }}:buildcache
-          cache-to: type=registry,ref=ghcr.io/${{ github.repository }}:buildcache-${{ github.ref_name }},mode=max
+          cache-to: type=registry,ref=ghcr.io/${{ github.repository }}:buildcache-${{ steps.meta.outputs.version }},mode=max
       - name: Verify ollama binary
         run: docker run --rm ghcr.io/${{ github.repository }}:${{ steps.meta.outputs.version }} --version
       - name: Extract binary
