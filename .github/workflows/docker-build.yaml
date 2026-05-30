@@ -116,30 +116,22 @@ jobs:
       # ── Benchmarks ──────────────────────────────────────────────────────────
       - name: Benchmark quantizations
         run: |
-          printf 'FROM /tmp/hf-model\n'    > /tmp/mf-f16
-          printf 'FROM /tmp/hf-model\n'   > /tmp/mf-q8-0
-          printf 'FROM /tmp/hf-model\n'   > /tmp/mf-q5-k-m
-          printf 'FROM /tmp/hf-model\n'   > /tmp/mf-q5-k-s
-          printf 'FROM /tmp/hf-model\n'   > /tmp/mf-q4-k-m
-          printf 'FROM /tmp/hf-model\n'   > /tmp/mf-q4-k-s
-          printf 'FROM /tmp/hf-model\n'   > /tmp/mf-q4-0
-          printf 'FROM /tmp/hf-model\n'   > /tmp/mf-q3-k-m
-          printf 'FROM /tmp/hf-model\n'   > /tmp/mf-q2-k
+          printf 'FROM /tmp/hf-model\n' > /tmp/mf
 
           hyperfine \
             --runs 1 \
             --warmup 0 \
             --ignore-failure \
             --export-json /tmp/bench.json \
-            --command-name F16    "ollama create qwen25-f16    -f /tmp/mf-f16" \
-            --command-name Q8_0   "ollama create qwen25-q8-0   -f /tmp/mf-q8-0   --quantize Q8_0" \
-            --command-name Q5_K_M "ollama create qwen25-q5-k-m -f /tmp/mf-q5-k-m --quantize Q5_K_M" \
-            --command-name Q5_K_S "ollama create qwen25-q5-k-s -f /tmp/mf-q5-k-s --quantize Q5_K_S" \
-            --command-name Q4_K_M "ollama create qwen25-q4-k-m -f /tmp/mf-q4-k-m --quantize Q4_K_M" \
-            --command-name Q4_K_S "ollama create qwen25-q4-k-s -f /tmp/mf-q4-k-s --quantize Q4_K_S" \
-            --command-name Q4_0   "ollama create qwen25-q4-0   -f /tmp/mf-q4-0   --quantize Q4_0" \
-            --command-name Q3_K_M "ollama create qwen25-q3-k-m -f /tmp/mf-q3-k-m --quantize Q3_K_M" \
-            --command-name Q2_K   "ollama create qwen25-q2-k   -f /tmp/mf-q2-k   --quantize Q2_K"
+            --command-name F16    "ollama create qwen25-f16    -f /tmp/mf" \
+            --command-name Q8_0   "ollama create qwen25-q8-0   -f /tmp/mf --quantize Q8_0" \
+            --command-name Q5_K_M "ollama create qwen25-q5-k-m -f /tmp/mf --quantize Q5_K_M" \
+            --command-name Q5_K_S "ollama create qwen25-q5-k-s -f /tmp/mf --quantize Q5_K_S" \
+            --command-name Q4_K_M "ollama create qwen25-q4-k-m -f /tmp/mf --quantize Q4_K_M" \
+            --command-name Q4_K_S "ollama create qwen25-q4-k-s -f /tmp/mf --quantize Q4_K_S" \
+            --command-name Q4_0   "ollama create qwen25-q4-0   -f /tmp/mf --quantize Q4_0" \
+            --command-name Q3_K_M "ollama create qwen25-q3-k-m -f /tmp/mf --quantize Q3_K_M" \
+            --command-name Q2_K   "ollama create qwen25-q2-k   -f /tmp/mf --quantize Q2_K"
 
       - name: Finalize summary
         if: always()
