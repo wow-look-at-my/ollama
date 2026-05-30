@@ -201,7 +201,7 @@ func BenchmarkConvert_F16ToF32_SIMD(b *testing.B) {
 
 func BenchmarkConvert_BF16ToF32_Old(b *testing.B) {
 	u8s := make([]byte, benchSize*2)
-	for i := 0; i < benchSize; i++ {
+	for i := range benchSize {
 		v := uint16(math.Float32bits(float32(i%1000)*0.01) >> 16)
 		u8s[i*2] = byte(v)
 		u8s[i*2+1] = byte(v >> 8)
