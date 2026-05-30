@@ -8,11 +8,11 @@ import (
 )
 
 const (
-	qk80      = 32
-	blockQ80  = 2 + qk80 // 34 bytes: FP16 scale + 32 x int8
-	qkK       = 256
-	kScaleSz  = 12
-	blockQ4K  = 2 + 2 + kScaleSz + qkK/2 // 144 bytes: 2xFP16 + 12 scales + 128 quants
+	qk80     = 32
+	blockQ80 = 2 + qk80 // 34 bytes: FP16 scale + 32 x int8
+	qkK      = 256
+	kScaleSz = 12
+	blockQ4K = 2 + 2 + kScaleSz + qkK/2 // 144 bytes: 2xFP16 + 12 scales + 128 quants
 )
 
 func quantizeQ8_0(src []float32) []byte {
@@ -268,5 +268,3 @@ func ggmlFP32ToFP16(f float32) uint16 {
 	}
 	return uint16(sign>>16) | uint16(nonsign)
 }
-
-var dst []byte // package-level to prevent dead-code elimination in benchmarks

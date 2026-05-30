@@ -5,6 +5,8 @@ import (
 	"testing"
 )
 
+var benchDst []byte
+
 func makeF32Data(n int) []float32 {
 	out := make([]float32, n)
 	for i := range out {
@@ -19,7 +21,7 @@ func BenchmarkQuantizeQ8_0(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for range b.N {
-		dst = quantizeQ8_0(src)
+		benchDst = quantizeQ8_0(src)
 	}
 }
 
@@ -30,7 +32,7 @@ func BenchmarkQuantizeQ4_K(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for range b.N {
-		dst = quantizeQ4_K(src)
+		benchDst = quantizeQ4_K(src)
 	}
 }
 

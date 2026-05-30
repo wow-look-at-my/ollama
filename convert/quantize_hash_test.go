@@ -52,7 +52,7 @@ int main() {
 }`, N)
 
 	cSrc := filepath.Join(dir, "harness.c")
-	if err := os.WriteFile(cSrc, []byte(cCode), 0644); err != nil {
+	if err := os.WriteFile(cSrc, []byte(cCode), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
