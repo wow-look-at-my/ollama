@@ -16,6 +16,8 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
+    outputs:
+      image_tag: ${{ steps.meta.outputs.version }}
     steps:
       - uses: actions/checkout@v4
       - name: Set up Docker Buildx
@@ -68,15 +70,20 @@ jobs:
       - uses: wow-look-at-my/buildhost/.github/actions/buildhost-publish@master
 
   bench:
-    needs: publish
+    # needs: build so we can read needs.build.outputs.image_tag for the container field
+    needs: [build, publish]
     runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/${{ github.repository }}:${{ needs.build.outputs.image_tag }}
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
     steps:
-      - name: Log in to GHCR
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Install tools
+        run: |
+          apt-get update -qq
+          apt-get install -y -qq python3-pip jq
+          pip3 install --quiet --break-system-packages huggingface-hub
 
       # ── Model cache ─────────────────────────────────────────────────────────
       - name: Cache Qwen2.5-0.5B safetensors
@@ -89,7 +96,6 @@ jobs:
       - name: Download Qwen2.5-0.5B
         if: steps.cache-model.outputs.cache-hit != 'true'
         run: |
-          pip install --quiet huggingface-hub
           python3 - << 'PY'
           from huggingface_hub import snapshot_download
           snapshot_download(
@@ -99,38 +105,24 @@ jobs:
           )
           PY
 
-      # ── Ollama server ────────────────────────────────────────────────────────
-      - name: Start ollama container
+      # ── Ollama server (runs in the same container as the steps) ─────────────
+      - name: Start ollama server
         run: |
-          # Mirror docker/metadata-action type=ref,event=branch sanitization
-          TAG=$(printf '%s' "${{ github.ref_name }}" \
-            | sed 's/[^a-zA-Z0-9._-]/-/g' | sed 's/-\{2,\}/-/g' | sed 's/^-//;s/-$//')
-          IMAGE="ghcr.io/${{ github.repository }}:$TAG"
-          echo "IMAGE=$IMAGE" >> "$GITHUB_ENV"
-          mkdir -p /tmp/ollama-models /tmp/bench-files
-          docker run -d \
-            --name ollama-bench \
-            -v /tmp/hf-model:/tmp/hf-model:ro \
-            -v /tmp/ollama-models:/root/.ollama/models \
-            -v /tmp/bench-files:/tmp/bench-files \
-            --entrypoint /usr/bin/ollama \
-            "$IMAGE" serve
-
-      - name: Wait for ollama ready
-        run: |
+          mkdir -p /tmp/ollama-models
+          OLLAMA_MODELS=/tmp/ollama-models ollama serve &
+          # Wait for ready
           for i in $(seq 1 60); do
-            docker exec ollama-bench curl -sf http://localhost:11434/health >/dev/null 2>&1 \
+            curl -sf http://localhost:11434/health >/dev/null 2>&1 \
               && { echo "Ready after ${i}s"; exit 0; }
             sleep 1
           done
-          echo "Timed out" >&2; docker logs ollama-bench >&2; exit 1
+          echo "Timed out waiting for ollama" >&2; exit 1
 
       # ── Benchmarks ──────────────────────────────────────────────────────────
       - name: Benchmark quantizations
+        env:
+          OLLAMA_MODELS: /tmp/ollama-models
         run: |
-          BENCH_DIR=/tmp/bench-files
-          OLLAMA_MODELS=/tmp/ollama-models
-
           fmt_dur() { (( $1 >= 60 )) && echo "$(($1/60))m $(($1%60))s" || echo "${1}s"; }
 
           get_gguf_size() {
@@ -144,20 +136,20 @@ jobs:
             echo "${b} B"
           }
 
-          # Run one ollama create; append a row to the summary.
+          # Run one ollama create; append a row to the step summary.
           # Args: quant  from_label  modelfile_content  [--quantize TYPE]
           create_and_bench() {
             local quant=$1 from_label=$2 modelfile_content=$3 quant_flag=${4:-}
             local model_name
             model_name="qwen25-$(printf '%s' "$quant" | tr '[:upper:]_' '[:lower:]-')"
-            local modelfile="$BENCH_DIR/Modelfile-${model_name}"
+            local modelfile="/tmp/Modelfile-${model_name}"
             printf '%s\n' "$modelfile_content" > "$modelfile"
 
             local t0 t1 rc=0
             t0=$(date +%s)
             # shellcheck disable=SC2086
-            docker exec ollama-bench ollama create "$model_name" -f "$modelfile" $quant_flag \
-              > "$BENCH_DIR/log-${model_name}.txt" 2>&1 || rc=$?
+            ollama create "$model_name" -f "$modelfile" $quant_flag \
+              > "/tmp/log-${model_name}.txt" 2>&1 || rc=$?
             t1=$(date +%s)
 
             local dur size status
@@ -167,12 +159,13 @@ jobs:
             else
               size="—"; status="❌"
               echo "--- $quant failed (rc=$rc) ---" >&2
-              cat "$BENCH_DIR/log-${model_name}.txt" >&2
+              cat "/tmp/log-${model_name}.txt" >&2
             fi
             printf '| `%s` | %s | %s | %s | %s |\n' \
               "$quant" "$from_label" "$dur" "$size" "$status" >> "$GITHUB_STEP_SUMMARY"
           }
 
+          IMAGE="ghcr.io/${{ github.repository }}:${{ needs.build.outputs.image_tag }}"
           {
             echo "# Quantization Benchmarks — Qwen/Qwen2.5-0.5B"
             echo ""
@@ -198,7 +191,3 @@ jobs:
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "_Unsupported quant types show ❌ — expected until ParseFileType covers them._" \
             >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Cleanup
-        if: always()
-        run: docker rm -f ollama-bench 2>/dev/null || true
