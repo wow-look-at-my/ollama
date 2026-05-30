@@ -73,6 +73,11 @@ jobs:
     # needs: build so we can read needs.build.outputs.image_tag for the container field
     needs: [build, publish]
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+    env:
+      OLLAMA_MODELS: /tmp/ollama-models
     container:
       image: ghcr.io/${{ github.repository }}:${{ needs.build.outputs.image_tag }}
       credentials:
@@ -109,7 +114,7 @@ jobs:
       - name: Start ollama server
         run: |
           mkdir -p /tmp/ollama-models
-          OLLAMA_MODELS=/tmp/ollama-models ollama serve &
+          nohup ollama serve > /tmp/ollama.log 2>&1 &
           # Wait for ready
           for i in $(seq 1 60); do
             curl -sf http://localhost:11434/health >/dev/null 2>&1 \
@@ -118,12 +123,13 @@ jobs:
           done
           echo "Timed out waiting for ollama" >&2; exit 1
 
-      # ── Benchmarks ──────────────────────────────────────────────────────────
-      - name: Benchmark quantizations
-        env:
-          OLLAMA_MODELS: /tmp/ollama-models
+      # ── Helper functions shared across bench steps ───────────────────────────
+      - name: Write bench helpers
         run: |
-          fmt_dur() { (( $1 >= 60 )) && echo "$(($1/60))m $(($1%60))s" || echo "${1}s"; }
+          cat > /tmp/bench-helpers.sh << 'EOF'
+          fmt_dur() {
+            if (( $1 >= 60 )); then echo "$(($1/60))m $(($1%60))s"; else echo "${1}s"; fi
+          }
 
           get_gguf_size() {
             local manifest="$OLLAMA_MODELS/manifests/library/$1/latest"
@@ -131,14 +137,12 @@ jobs:
             local b
             b=$(jq -r '[.layers[] | select(.mediaType | contains("model")) | .size] | add // 0' "$manifest" 2>/dev/null)
             [[ -z "$b" || "$b" == "null" || "$b" == "0" ]] && { echo "—"; return; }
-            (( b >= 1073741824 )) && awk "BEGIN{printf \"%.2f GiB\", $b/1073741824}" && return
-            (( b >= 1048576    )) && awk "BEGIN{printf \"%.2f MiB\", $b/1048576}"    && return
-            echo "${b} B"
+            if   (( b >= 1073741824 )); then awk "BEGIN{printf \"%.2f GiB\", $b/1073741824}"
+            elif (( b >= 1048576    )); then awk "BEGIN{printf \"%.2f MiB\", $b/1048576}"
+            else echo "${b} B"; fi
           }
 
-          # Run one ollama create; append a row to the step summary.
-          # Args: quant  from_label  modelfile_content  [--quantize TYPE]
-          create_and_bench() {
+          bench_quant() {
             local quant=$1 from_label=$2 modelfile_content=$3 quant_flag=${4:-}
             local model_name
             model_name="qwen25-$(printf '%s' "$quant" | tr '[:upper:]_' '[:lower:]-')"
@@ -164,7 +168,11 @@ jobs:
             printf '| `%s` | %s | %s | %s | %s |\n' \
               "$quant" "$from_label" "$dur" "$size" "$status" >> "$GITHUB_STEP_SUMMARY"
           }
+          EOF
 
+      # ── Summary header ───────────────────────────────────────────────────────
+      - name: Write summary header
+        run: |
           IMAGE="ghcr.io/${{ github.repository }}:${{ needs.build.outputs.image_tag }}"
           {
             echo "# Quantization Benchmarks — Qwen/Qwen2.5-0.5B"
@@ -179,15 +187,63 @@ jobs:
             echo "|:------|:-----|:--------:|----------:|:------:|"
           } >> "$GITHUB_STEP_SUMMARY"
 
-          # Step 1: safetensors → F16 (full conversion)
-          create_and_bench "F16" "safetensors" "FROM /tmp/hf-model"
+      # ── Benchmarks ──────────────────────────────────────────────────────────
+      - name: Quantize F16 (safetensors → GGUF)
+        run: |
+          source /tmp/bench-helpers.sh
+          bench_quant "F16" "safetensors" "FROM /tmp/hf-model"
 
-          # Step 2: requantise from F16 — failures for unsupported types are expected
-          F16_FROM="FROM qwen25-f16"
-          for QUANT in Q8_0 Q5_K_M Q5_K_S Q4_K_M Q4_K_S Q4_0 Q3_K_M Q2_K; do
-            create_and_bench "$QUANT" "F16" "$F16_FROM" "--quantize $QUANT"
-          done
+      - name: Quantize Q8_0
+        continue-on-error: true
+        run: |
+          source /tmp/bench-helpers.sh
+          bench_quant "Q8_0" "F16" "FROM qwen25-f16" "--quantize Q8_0"
 
+      - name: Quantize Q5_K_M
+        continue-on-error: true
+        run: |
+          source /tmp/bench-helpers.sh
+          bench_quant "Q5_K_M" "F16" "FROM qwen25-f16" "--quantize Q5_K_M"
+
+      - name: Quantize Q5_K_S
+        continue-on-error: true
+        run: |
+          source /tmp/bench-helpers.sh
+          bench_quant "Q5_K_S" "F16" "FROM qwen25-f16" "--quantize Q5_K_S"
+
+      - name: Quantize Q4_K_M
+        continue-on-error: true
+        run: |
+          source /tmp/bench-helpers.sh
+          bench_quant "Q4_K_M" "F16" "FROM qwen25-f16" "--quantize Q4_K_M"
+
+      - name: Quantize Q4_K_S
+        continue-on-error: true
+        run: |
+          source /tmp/bench-helpers.sh
+          bench_quant "Q4_K_S" "F16" "FROM qwen25-f16" "--quantize Q4_K_S"
+
+      - name: Quantize Q4_0
+        continue-on-error: true
+        run: |
+          source /tmp/bench-helpers.sh
+          bench_quant "Q4_0" "F16" "FROM qwen25-f16" "--quantize Q4_0"
+
+      - name: Quantize Q3_K_M
+        continue-on-error: true
+        run: |
+          source /tmp/bench-helpers.sh
+          bench_quant "Q3_K_M" "F16" "FROM qwen25-f16" "--quantize Q3_K_M"
+
+      - name: Quantize Q2_K
+        continue-on-error: true
+        run: |
+          source /tmp/bench-helpers.sh
+          bench_quant "Q2_K" "F16" "FROM qwen25-f16" "--quantize Q2_K"
+
+      - name: Finalize summary
+        if: always()
+        run: |
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "_Unsupported quant types show ❌ — expected until ParseFileType covers them._" \
             >> "$GITHUB_STEP_SUMMARY"
