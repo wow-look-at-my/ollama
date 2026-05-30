@@ -40,7 +40,7 @@ func quantizeQ8_0Blocks(dst []byte, src []float32, nBlocks int) {
 			id = 1.0 / d
 		}
 
-		binary.LittleEndian.PutUint16(dst[off:], float16.Fromfloat32(d).Bits())
+		binary.LittleEndian.PutUint16(dst[off:], fp32ToFP16Trunc(d))
 
 		for j, v := range block {
 			dst[off+2+j] = byte(int8(roundf(v * id)))
@@ -242,7 +242,21 @@ func float32Abs(f float32) float32 {
 }
 
 func roundf(f float32) float32 {
-	return float32(math.RoundToEven(float64(f)))
+	return float32(math.Round(float64(f)))
+}
+
+func fp32ToFP16Trunc(f float32) uint16 {
+	b := math.Float32bits(f)
+	sign := uint16((b >> 16) & 0x8000)
+	exp := int32((b>>23)&0xFF) - 127 + 15
+	mant := uint16((b >> 13) & 0x3FF)
+	if exp <= 0 {
+		return sign
+	}
+	if exp >= 31 {
+		return sign | 0x7C00
+	}
+	return sign | uint16(exp)<<10 | mant
 }
 
 var dst []byte // package-level to prevent dead-code elimination in benchmarks
