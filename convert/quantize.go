@@ -40,7 +40,7 @@ func quantizeQ8_0Blocks(dst []byte, src []float32, nBlocks int) {
 			id = 1.0 / d
 		}
 
-		binary.LittleEndian.PutUint16(dst[off:], fp32ToFP16Trunc(d))
+		binary.LittleEndian.PutUint16(dst[off:], ggmlFP32ToFP16(d))
 
 		for j, v := range block {
 			dst[off+2+j] = byte(int8(roundf(v * id)))
@@ -245,18 +245,28 @@ func roundf(f float32) float32 {
 	return float32(math.Round(float64(f)))
 }
 
-func fp32ToFP16Trunc(f float32) uint16 {
-	b := math.Float32bits(f)
-	sign := uint16((b >> 16) & 0x8000)
-	exp := int32((b>>23)&0xFF) - 127 + 15
-	mant := uint16((b >> 13) & 0x3FF)
-	if exp <= 0 {
-		return sign
+func ggmlFP32ToFP16(f float32) uint16 {
+	scaleToInf := math.Float32frombits(0x77800000)
+	scaleToZero := math.Float32frombits(0x08800000)
+	base := (float32Abs(f) * scaleToInf) * scaleToZero
+
+	w := math.Float32bits(f)
+	shl1W := w + w
+	sign := w & 0x80000000
+	bias := shl1W & 0xFF000000
+	if bias < 0x71000000 {
+		bias = 0x71000000
 	}
-	if exp >= 31 {
-		return sign | 0x7C00
+
+	base = math.Float32frombits((bias>>1)+0x07800000) + base
+	bits := math.Float32bits(base)
+	expBits := (bits >> 13) & 0x00007C00
+	mantBits := bits & 0x00000FFF
+	nonsign := expBits + mantBits
+	if shl1W > 0xFF000000 {
+		return uint16(sign>>16) | 0x7E00
 	}
-	return sign | uint16(exp)<<10 | mant
+	return uint16(sign>>16) | uint16(nonsign)
 }
 
 var dst []byte // package-level to prevent dead-code elimination in benchmarks
