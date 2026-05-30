@@ -100,14 +100,11 @@ jobs:
         if: steps.cache-model.outputs.cache-hit != 'true'
         run: |
           mkdir -p /tmp/hf-model
-          curl -sf "https://huggingface.co/api/models/Qwen/Qwen2.5-0.5B" \
-            | jq -r '.siblings[] | select(.rfilename | test("\\.(bin|pt)$|^(flax_model|tf_model|rust_model)") | not) | .rfilename' \
-            | while read -r f; do
-                mkdir -p "/tmp/hf-model/$(dirname "$f")"
-                curl -fL --progress-bar \
-                  -o "/tmp/hf-model/${f}" \
-                  "https://huggingface.co/Qwen/Qwen2.5-0.5B/resolve/main/${f}"
-              done
+          for f in config.json generation_config.json merges.txt model.safetensors tokenizer.json tokenizer_config.json vocab.json; do
+            curl -fL --progress-bar \
+              -o "/tmp/hf-model/${f}" \
+              "https://huggingface.co/Qwen/Qwen2.5-0.5B/resolve/main/${f}"
+          done
 
       # ── Ollama server (runs in the same container as the steps) ─────────────
       - name: Start ollama server
