@@ -16,8 +16,6 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
-    outputs:
-      image_version: ${{ steps.meta.outputs.version }}
     steps:
       - uses: actions/checkout@v4
       - name: Set up Docker Buildx
@@ -70,7 +68,7 @@ jobs:
       - uses: wow-look-at-my/buildhost/.github/actions/buildhost-publish@master
 
   bench:
-    needs: [build, publish]
+    needs: publish
     runs-on: ubuntu-latest
     steps:
       - name: Log in to GHCR
@@ -104,7 +102,11 @@ jobs:
       # ── Ollama server ────────────────────────────────────────────────────────
       - name: Start ollama container
         run: |
-          IMAGE="ghcr.io/${{ github.repository }}:${{ needs.build.outputs.image_version }}"
+          # Mirror docker/metadata-action type=ref,event=branch sanitization
+          TAG=$(printf '%s' "${{ github.ref_name }}" \
+            | sed 's/[^a-zA-Z0-9._-]/-/g' | sed 's/-\{2,\}/-/g' | sed 's/^-//;s/-$//')
+          IMAGE="ghcr.io/${{ github.repository }}:$TAG"
+          echo "IMAGE=$IMAGE" >> "$GITHUB_ENV"
           mkdir -p /tmp/ollama-models /tmp/bench-files
           docker run -d \
             --name ollama-bench \
@@ -171,7 +173,6 @@ jobs:
               "$quant" "$from_label" "$dur" "$size" "$status" >> "$GITHUB_STEP_SUMMARY"
           }
 
-          IMAGE="ghcr.io/${{ github.repository }}:${{ needs.build.outputs.image_version }}"
           {
             echo "# Quantization Benchmarks — Qwen/Qwen2.5-0.5B"
             echo ""
