@@ -639,6 +639,92 @@ func createModel(r api.CreateRequest, name model.Name, baseLayers []*layerGGML, 
 	return nil
 }
 
+// CreateDirect creates a model directly on disk, bypassing the HTTP server.
+// r.Files, r.Adapters, and r.DraftFiles must map basenames to sha256 digests,
+// with blobs already present in the ollama blob store (see EnsureBlobFromPath).
+func CreateDirect(ctx context.Context, r api.CreateRequest, fn func(api.ProgressResponse)) error {
+	config := &model.ConfigV2{
+		OS:           "linux",
+		Architecture: "amd64",
+		RootFS:       model.RootFS{Type: "layers"},
+	}
+	config.Renderer = r.Renderer
+	config.Parser = r.Parser
+	config.Requires = r.Requires
+
+	name := model.ParseName(cmp.Or(r.Model, r.Name))
+	if !name.IsValid() {
+		return fmt.Errorf(errtypes.InvalidModelNameErrMsg)
+	}
+
+	oldManifest, _ := manifest.ParseNamedManifest(name)
+
+	var (
+		baseLayers []*layerGGML
+		err        error
+	)
+	switch {
+	case r.From != "":
+		baseLayers, err = parseFromModel(ctx, model.ParseName(r.From), fn)
+	case r.Files != nil:
+		baseLayers, err = convertModelFromFiles(r.Files, baseLayers, false, fn, r.DraftFiles)
+	default:
+		err = errNeitherFromOrFiles
+	}
+	if err != nil {
+		return err
+	}
+
+	if r.Adapters != nil {
+		adapterLayers, err := convertModelFromFiles(r.Adapters, baseLayers, true, fn)
+		if err != nil {
+			return err
+		}
+		baseLayers = append(baseLayers, adapterLayers...)
+	}
+
+	if err := createModel(r, name, baseLayers, config, fn); err != nil {
+		return err
+	}
+
+	if !envconfig.NoPrune() && oldManifest != nil {
+		oldManifest.RemoveLayers()
+	}
+	return nil
+}
+
+// EnsureBlobFromPath registers a local file in the ollama blob store under
+// the given sha256 digest. Hard-links where possible; falls back to copy.
+func EnsureBlobFromPath(localPath, digest string) error {
+	blob, err := manifest.BlobsPath(digest)
+	if err != nil {
+		return err
+	}
+	if _, err := os.Stat(blob); err == nil {
+		return nil
+	}
+	if err := os.Link(localPath, blob); err == nil {
+		return nil
+	}
+	src, err := os.Open(localPath)
+	if err != nil {
+		return err
+	}
+	defer src.Close()
+	tmp, err := os.CreateTemp(filepath.Dir(blob), "upload-*")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(tmp.Name())
+	if _, err := io.Copy(tmp, src); err != nil {
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmp.Name(), blob)
+}
+
 func hasSourceFP8Tensors(kv ggml.KV) bool {
 	return kv.String("source_quantization") == "hf_fp8" && len(kv.Strings("source_fp8_tensors")) > 0
 }
