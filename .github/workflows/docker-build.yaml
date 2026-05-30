@@ -83,7 +83,6 @@ jobs:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
     steps:
-      - uses: actions/checkout@v4
       - name: Install tools
         run: |
           apt-get update -qq
@@ -120,21 +119,39 @@ jobs:
           printf 'FROM /tmp/hf-model\n' > /tmp/mf
           mkdir -p "$GITHUB_WORKSPACE/.bench-sizes"
 
+          cat > /tmp/bench-quant.sh << 'EOF'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          NAME=$1; shift
+          MODEL="qwen25-$(echo "$NAME" | tr '[:upper:]_' '[:lower:]-')"
+          ollama create "$MODEL" -f /tmp/mf "$@"
+          {
+            manifest="${OLLAMA_MODELS}/manifests/registry.ollama.ai/library/${MODEL}/latest"
+            if [[ -f "$manifest" ]]; then
+              b=$(jq '[.layers[] | select(.mediaType | contains("model")) | .size] | add // 0' "$manifest")
+              if   (( b >= 1073741824 )); then awk "BEGIN{printf \"%.2f GiB\", $b/1073741824}"
+              elif (( b >= 1048576    )); then awk "BEGIN{printf \"%.2f MiB\", $b/1048576}"
+              else echo "${b} B"
+              fi
+            fi
+          } > "${GITHUB_WORKSPACE}/.bench-sizes/${NAME}" 2>/dev/null || true
+          EOF
+
           hyperfine \
             --runs 1 \
             --warmup 0 \
             --ignore-failure \
             --export-json "$GITHUB_WORKSPACE/bench.json" \
             --prepare 'rm -rf "$OLLAMA_MODELS/blobs" "$OLLAMA_MODELS/manifests"' \
-            --command-name F16    "bash .github/workflows/bench-quant.sh F16" \
-            --command-name Q8_0   "bash .github/workflows/bench-quant.sh Q8_0   --quantize Q8_0" \
-            --command-name Q5_K_M "bash .github/workflows/bench-quant.sh Q5_K_M --quantize Q5_K_M" \
-            --command-name Q5_K_S "bash .github/workflows/bench-quant.sh Q5_K_S --quantize Q5_K_S" \
-            --command-name Q4_K_M "bash .github/workflows/bench-quant.sh Q4_K_M --quantize Q4_K_M" \
-            --command-name Q4_K_S "bash .github/workflows/bench-quant.sh Q4_K_S --quantize Q4_K_S" \
-            --command-name Q4_0   "bash .github/workflows/bench-quant.sh Q4_0   --quantize Q4_0" \
-            --command-name Q3_K_M "bash .github/workflows/bench-quant.sh Q3_K_M --quantize Q3_K_M" \
-            --command-name Q2_K   "bash .github/workflows/bench-quant.sh Q2_K   --quantize Q2_K"
+            --command-name F16    "bash /tmp/bench-quant.sh F16" \
+            --command-name Q8_0   "bash /tmp/bench-quant.sh Q8_0   --quantize Q8_0" \
+            --command-name Q5_K_M "bash /tmp/bench-quant.sh Q5_K_M --quantize Q5_K_M" \
+            --command-name Q5_K_S "bash /tmp/bench-quant.sh Q5_K_S --quantize Q5_K_S" \
+            --command-name Q4_K_M "bash /tmp/bench-quant.sh Q4_K_M --quantize Q4_K_M" \
+            --command-name Q4_K_S "bash /tmp/bench-quant.sh Q4_K_S --quantize Q4_K_S" \
+            --command-name Q4_0   "bash /tmp/bench-quant.sh Q4_0   --quantize Q4_0" \
+            --command-name Q3_K_M "bash /tmp/bench-quant.sh Q3_K_M --quantize Q3_K_M" \
+            --command-name Q2_K   "bash /tmp/bench-quant.sh Q2_K   --quantize Q2_K"
 
       - name: Finalize summary
         if: always()
