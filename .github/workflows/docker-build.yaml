@@ -101,8 +101,7 @@ jobs:
         run: |
           mkdir -p /tmp/hf-model
           curl -sf "https://huggingface.co/api/models/Qwen/Qwen2.5-0.5B" \
-            | jq -r '.siblings[].rfilename' \
-            | grep -Ev '\.(bin|pt)$|^(flax_model|tf_model|rust_model)' \
+            | jq -r '.siblings[] | select(.rfilename | test("\\.(bin|pt)$|^(flax_model|tf_model|rust_model)") | not) | .rfilename' \
             | while read -r f; do
                 mkdir -p "/tmp/hf-model/$(dirname "$f")"
                 curl -fL --progress-bar \
