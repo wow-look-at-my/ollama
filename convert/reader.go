@@ -10,6 +10,7 @@ import (
 
 type Tensor interface {
 	Name() string
+	SetName(string)
 	Shape() []uint64
 	Kind() uint32
 	SetRepacker(Repacker)
@@ -25,6 +26,10 @@ type tensorBase struct {
 
 func (t tensorBase) Name() string {
 	return t.name
+}
+
+func (t *tensorBase) SetName(name string) {
+	t.name = name
 }
 
 func (t tensorBase) Shape() []uint64 {
