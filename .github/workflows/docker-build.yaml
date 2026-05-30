@@ -86,8 +86,7 @@ jobs:
       - name: Install tools
         run: |
           apt-get update -qq
-          apt-get install -y -qq python3-pip jq
-          pip3 install --quiet --break-system-packages huggingface-hub
+          apt-get install -y -qq jq hyperfine
 
       # ── Model cache ─────────────────────────────────────────────────────────
       - name: Cache Qwen2.5-0.5B safetensors
@@ -100,21 +99,22 @@ jobs:
       - name: Download Qwen2.5-0.5B
         if: steps.cache-model.outputs.cache-hit != 'true'
         run: |
-          python3 - << 'PY'
-          from huggingface_hub import snapshot_download
-          snapshot_download(
-            "Qwen/Qwen2.5-0.5B",
-            local_dir="/tmp/hf-model",
-            ignore_patterns=["*.bin", "*.pt", "flax_model*", "tf_model*", "rust_model*"],
-          )
-          PY
+          mkdir -p /tmp/hf-model
+          curl -sf "https://huggingface.co/api/models/Qwen/Qwen2.5-0.5B" \
+            | jq -r '.siblings[].rfilename' \
+            | grep -Ev '\.(bin|pt)$|^(flax_model|tf_model|rust_model)' \
+            | while read -r f; do
+                mkdir -p "/tmp/hf-model/$(dirname "$f")"
+                curl -fL --progress-bar \
+                  -o "/tmp/hf-model/${f}" \
+                  "https://huggingface.co/Qwen/Qwen2.5-0.5B/resolve/main/${f}"
+              done
 
       # ── Ollama server (runs in the same container as the steps) ─────────────
       - name: Start ollama server
         run: |
           mkdir -p /tmp/ollama-models
           nohup ollama serve > /tmp/ollama.log 2>&1 &
-          # Wait for ready
           for i in $(seq 1 60); do
             curl -sf http://localhost:11434/health >/dev/null 2>&1 \
               && { echo "Ready after ${i}s"; exit 0; }
@@ -122,19 +122,37 @@ jobs:
           done
           echo "Timed out waiting for ollama" >&2; exit 1
 
-      # ── Helper functions shared across bench steps ───────────────────────────
-      # bench_quant writes each result row to /tmp/bench-rows/<QUANT>.txt so
-      # the finalize step can assemble the complete table in a single write to
-      # GITHUB_STEP_SUMMARY — GHA inserts a blank line between each step's
-      # summary contribution, which would break a multi-step Markdown table.
-      - name: Write bench helpers
+      # ── Benchmarks ──────────────────────────────────────────────────────────
+      - name: Benchmark quantizations
         run: |
-          mkdir -p /tmp/bench-rows
-          cat > /tmp/bench-helpers.sh << 'EOF'
-          fmt_dur() {
-            if (( $1 >= 60 )); then echo "$(($1/60))m $(($1%60))s"; else echo "${1}s"; fi
-          }
+          printf 'FROM /tmp/hf-model\n'    > /tmp/mf-f16
+          printf 'FROM /tmp/hf-model\n'   > /tmp/mf-q8-0
+          printf 'FROM /tmp/hf-model\n'   > /tmp/mf-q5-k-m
+          printf 'FROM /tmp/hf-model\n'   > /tmp/mf-q5-k-s
+          printf 'FROM /tmp/hf-model\n'   > /tmp/mf-q4-k-m
+          printf 'FROM /tmp/hf-model\n'   > /tmp/mf-q4-k-s
+          printf 'FROM /tmp/hf-model\n'   > /tmp/mf-q4-0
+          printf 'FROM /tmp/hf-model\n'   > /tmp/mf-q3-k-m
+          printf 'FROM /tmp/hf-model\n'   > /tmp/mf-q2-k
 
+          hyperfine \
+            --runs 1 \
+            --warmup 0 \
+            --ignore-failure \
+            --export-json /tmp/bench.json \
+            --command-name F16    "ollama create qwen25-f16    -f /tmp/mf-f16" \
+            --command-name Q8_0   "ollama create qwen25-q8-0   -f /tmp/mf-q8-0   --quantize Q8_0" \
+            --command-name Q5_K_M "ollama create qwen25-q5-k-m -f /tmp/mf-q5-k-m --quantize Q5_K_M" \
+            --command-name Q5_K_S "ollama create qwen25-q5-k-s -f /tmp/mf-q5-k-s --quantize Q5_K_S" \
+            --command-name Q4_K_M "ollama create qwen25-q4-k-m -f /tmp/mf-q4-k-m --quantize Q4_K_M" \
+            --command-name Q4_K_S "ollama create qwen25-q4-k-s -f /tmp/mf-q4-k-s --quantize Q4_K_S" \
+            --command-name Q4_0   "ollama create qwen25-q4-0   -f /tmp/mf-q4-0   --quantize Q4_0" \
+            --command-name Q3_K_M "ollama create qwen25-q3-k-m -f /tmp/mf-q3-k-m --quantize Q3_K_M" \
+            --command-name Q2_K   "ollama create qwen25-q2-k   -f /tmp/mf-q2-k   --quantize Q2_K"
+
+      - name: Finalize summary
+        if: always()
+        run: |
           get_gguf_size() {
             local manifest="$OLLAMA_MODELS/manifests/registry.ollama.ai/library/$1/latest"
             [[ -f "$manifest" ]] || { echo "—"; return; }
@@ -146,92 +164,6 @@ jobs:
             else echo "${b} B"; fi
           }
 
-          bench_quant() {
-            local quant=$1 from_label=$2 modelfile_content=$3 quant_flag=${4:-}
-            local model_name
-            model_name="qwen25-$(printf '%s' "$quant" | tr '[:upper:]_' '[:lower:]-')"
-            local modelfile="/tmp/Modelfile-${model_name}"
-            printf '%s\n' "$modelfile_content" > "$modelfile"
-
-            local t0 t1 rc=0
-            t0=$(date +%s)
-            # shellcheck disable=SC2086
-            ollama create "$model_name" -f "$modelfile" $quant_flag \
-              > "/tmp/log-${model_name}.txt" 2>&1 || rc=$?
-            t1=$(date +%s)
-
-            local dur size status
-            dur=$(fmt_dur $((t1 - t0)))
-            if [[ $rc -eq 0 ]]; then
-              size=$(get_gguf_size "$model_name"); status="✅"
-            else
-              size="—"; status="❌"
-              echo "--- $quant failed (rc=$rc) ---" >&2
-              cat "/tmp/log-${model_name}.txt" >&2
-            fi
-            printf '| `%s` | %s | %s | %s | %s |\n' \
-              "$quant" "$from_label" "$dur" "$size" "$status" > "/tmp/bench-rows/${quant}.txt"
-            return $rc
-          }
-          EOF
-
-      # ── Benchmarks ──────────────────────────────────────────────────────────
-      - name: Quantize F16 (safetensors → GGUF)
-        run: |
-          source /tmp/bench-helpers.sh
-          bench_quant "F16" "safetensors" "FROM /tmp/hf-model"
-
-      - name: Quantize Q8_0
-        continue-on-error: true
-        run: |
-          source /tmp/bench-helpers.sh
-          bench_quant "Q8_0" "F16" "FROM qwen25-f16" "--quantize Q8_0"
-
-      - name: Quantize Q5_K_M
-        continue-on-error: true
-        run: |
-          source /tmp/bench-helpers.sh
-          bench_quant "Q5_K_M" "F16" "FROM qwen25-f16" "--quantize Q5_K_M"
-
-      - name: Quantize Q5_K_S
-        continue-on-error: true
-        run: |
-          source /tmp/bench-helpers.sh
-          bench_quant "Q5_K_S" "F16" "FROM qwen25-f16" "--quantize Q5_K_S"
-
-      - name: Quantize Q4_K_M
-        continue-on-error: true
-        run: |
-          source /tmp/bench-helpers.sh
-          bench_quant "Q4_K_M" "F16" "FROM qwen25-f16" "--quantize Q4_K_M"
-
-      - name: Quantize Q4_K_S
-        continue-on-error: true
-        run: |
-          source /tmp/bench-helpers.sh
-          bench_quant "Q4_K_S" "F16" "FROM qwen25-f16" "--quantize Q4_K_S"
-
-      - name: Quantize Q4_0
-        continue-on-error: true
-        run: |
-          source /tmp/bench-helpers.sh
-          bench_quant "Q4_0" "F16" "FROM qwen25-f16" "--quantize Q4_0"
-
-      - name: Quantize Q3_K_M
-        continue-on-error: true
-        run: |
-          source /tmp/bench-helpers.sh
-          bench_quant "Q3_K_M" "F16" "FROM qwen25-f16" "--quantize Q3_K_M"
-
-      - name: Quantize Q2_K
-        continue-on-error: true
-        run: |
-          source /tmp/bench-helpers.sh
-          bench_quant "Q2_K" "F16" "FROM qwen25-f16" "--quantize Q2_K"
-
-      - name: Finalize summary
-        if: always()
-        run: |
           IMAGE="ghcr.io/${{ github.repository }}:${{ needs.build.outputs.image_tag }}"
           {
             echo "# Quantization Benchmarks — Qwen/Qwen2.5-0.5B"
@@ -244,12 +176,21 @@ jobs:
             echo ""
             echo "| Quant | From | Duration | GGUF Size | Status |"
             echo "|:------|:-----|:--------:|----------:|:------:|"
-            for quant in F16 Q8_0 Q5_K_M Q5_K_S Q4_K_M Q4_K_S Q4_0 Q3_K_M Q2_K; do
-              f="/tmp/bench-rows/${quant}.txt"
-              if [[ -f "$f" ]]; then cat "$f"
-              else printf '| `%s` | — | — | — | ⏭ |\n' "$quant"
-              fi
-            done
+            if [[ -f /tmp/bench.json ]]; then
+              jq -c '.results[]' /tmp/bench.json | while read -r r; do
+                name=$(echo "$r" | jq -r '.command')
+                rc=$(echo "$r"   | jq -r '.exit_codes[0]')
+                dur_s=$(echo "$r" | jq -r '.mean')
+                dur=$(awk "BEGIN{s=int($dur_s); if(s>=60) printf \"%dm %ds\",int(s/60),s%60; else printf \"%ds\",s}")
+                model="qwen25-$(echo "$name" | tr '[:upper:]_' '[:lower:]-')"
+                from="safetensors"
+                if [[ "$rc" == "0" ]]; then size=$(get_gguf_size "$model"); status="✅"
+                else size="—"; status="❌"; fi
+                printf '| `%s` | %s | %s | %s | %s |\n' "$name" "$from" "$dur" "$size" "$status"
+              done
+            else
+              echo "| — | — | — | — | ⏭ benchmark did not run |"
+            fi
             echo ""
             echo "_Unsupported quant types show ❌ — expected until ParseFileType covers them._"
           } >> "$GITHUB_STEP_SUMMARY"
