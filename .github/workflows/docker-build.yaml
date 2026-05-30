@@ -10,7 +10,7 @@ on:
 permissions:
   id-token: write
   contents: read
-  actions: read
+  actions: write
   packages: write
 
 jobs:
@@ -47,9 +47,11 @@ jobs:
           provenance: false
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          # Store/read the build layer cache in ghcr so subsequent runs reuse it.
-          cache-from: type=registry,ref=ghcr.io/${{ github.repository }}:buildcache
-          cache-to: type=registry,ref=ghcr.io/${{ github.repository }}:buildcache,mode=max
+          # Use GitHub Actions' content-addressed cache so every unique layer
+          # variant is stored independently — different branches / go.mod
+          # versions coexist without evicting each other.
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
       - name: Verify ollama binary
         run: docker run --rm ghcr.io/${{ github.repository }}:${{ steps.meta.outputs.version }} --version
       - name: Extract binary
