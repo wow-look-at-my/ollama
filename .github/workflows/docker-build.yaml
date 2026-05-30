@@ -124,15 +124,20 @@ jobs:
           echo "Timed out waiting for ollama" >&2; exit 1
 
       # ── Helper functions shared across bench steps ───────────────────────────
+      # bench_quant writes each result row to /tmp/bench-rows/<QUANT>.txt so
+      # the finalize step can assemble the complete table in a single write to
+      # GITHUB_STEP_SUMMARY — GHA inserts a blank line between each step's
+      # summary contribution, which would break a multi-step Markdown table.
       - name: Write bench helpers
         run: |
+          mkdir -p /tmp/bench-rows
           cat > /tmp/bench-helpers.sh << 'EOF'
           fmt_dur() {
             if (( $1 >= 60 )); then echo "$(($1/60))m $(($1%60))s"; else echo "${1}s"; fi
           }
 
           get_gguf_size() {
-            local manifest="$OLLAMA_MODELS/manifests/library/$1/latest"
+            local manifest="$OLLAMA_MODELS/manifests/registry.ollama.ai/library/$1/latest"
             [[ -f "$manifest" ]] || { echo "—"; return; }
             local b
             b=$(jq -r '[.layers[] | select(.mediaType | contains("model")) | .size] | add // 0' "$manifest" 2>/dev/null)
@@ -166,26 +171,9 @@ jobs:
               cat "/tmp/log-${model_name}.txt" >&2
             fi
             printf '| `%s` | %s | %s | %s | %s |\n' \
-              "$quant" "$from_label" "$dur" "$size" "$status" >> "$GITHUB_STEP_SUMMARY"
+              "$quant" "$from_label" "$dur" "$size" "$status" > "/tmp/bench-rows/${quant}.txt"
           }
           EOF
-
-      # ── Summary header ───────────────────────────────────────────────────────
-      - name: Write summary header
-        run: |
-          IMAGE="ghcr.io/${{ github.repository }}:${{ needs.build.outputs.image_tag }}"
-          {
-            echo "# Quantization Benchmarks — Qwen/Qwen2.5-0.5B"
-            echo ""
-            echo "> **Model**: [Qwen/Qwen2.5-0.5B](https://huggingface.co/Qwen/Qwen2.5-0.5B) · safetensors input"
-            echo ">"
-            echo "> **Image**: \`$IMAGE\`"
-            echo ">"
-            echo "> **Runner**: ubuntu-latest (CPU-only, $(nproc) vCPUs) · $(date -u '+%Y-%m-%d %H:%M UTC')"
-            echo ""
-            echo "| Quant | From | Duration | GGUF Size | Status |"
-            echo "|:------|:-----|:--------:|----------:|:------:|"
-          } >> "$GITHUB_STEP_SUMMARY"
 
       # ── Benchmarks ──────────────────────────────────────────────────────────
       - name: Quantize F16 (safetensors → GGUF)
@@ -244,6 +232,24 @@ jobs:
       - name: Finalize summary
         if: always()
         run: |
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "_Unsupported quant types show ❌ — expected until ParseFileType covers them._" \
-            >> "$GITHUB_STEP_SUMMARY"
+          IMAGE="ghcr.io/${{ github.repository }}:${{ needs.build.outputs.image_tag }}"
+          {
+            echo "# Quantization Benchmarks — Qwen/Qwen2.5-0.5B"
+            echo ""
+            echo "> **Model**: [Qwen/Qwen2.5-0.5B](https://huggingface.co/Qwen/Qwen2.5-0.5B) · safetensors input"
+            echo ">"
+            echo "> **Image**: \`$IMAGE\`"
+            echo ">"
+            echo "> **Runner**: ubuntu-latest (CPU-only, $(nproc) vCPUs) · $(date -u '+%Y-%m-%d %H:%M UTC')"
+            echo ""
+            echo "| Quant | From | Duration | GGUF Size | Status |"
+            echo "|:------|:-----|:--------:|----------:|:------:|"
+            for quant in F16 Q8_0 Q5_K_M Q5_K_S Q4_K_M Q4_K_S Q4_0 Q3_K_M Q2_K; do
+              f="/tmp/bench-rows/${quant}.txt"
+              if [[ -f "$f" ]]; then cat "$f"
+              else printf '| `%s` | — | — | — | ⏭ |\n' "$quant"
+              fi
+            done
+            echo ""
+            echo "_Unsupported quant types show ❌ — expected until ParseFileType covers them._"
+          } >> "$GITHUB_STEP_SUMMARY"
