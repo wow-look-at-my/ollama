@@ -16,6 +16,8 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
+    outputs:
+      image_version: ${{ steps.meta.outputs.version }}
     steps:
       - uses: actions/checkout@v4
       - name: Set up Docker Buildx
@@ -66,3 +68,136 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: wow-look-at-my/buildhost/.github/actions/buildhost-publish@master
+
+  bench:
+    needs: [build, publish]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # ── Model cache ─────────────────────────────────────────────────────────
+      - name: Cache Qwen2.5-0.5B safetensors
+        id: cache-model
+        uses: actions/cache@v4
+        with:
+          path: /tmp/hf-model
+          key: qwen2.5-0.5b-safetensors-v1
+
+      - name: Download Qwen2.5-0.5B
+        if: steps.cache-model.outputs.cache-hit != 'true'
+        run: |
+          pip install --quiet huggingface-hub
+          python3 - << 'PY'
+          from huggingface_hub import snapshot_download
+          snapshot_download(
+            "Qwen/Qwen2.5-0.5B",
+            local_dir="/tmp/hf-model",
+            ignore_patterns=["*.bin", "*.pt", "flax_model*", "tf_model*", "rust_model*"],
+          )
+          PY
+
+      # ── Ollama server ────────────────────────────────────────────────────────
+      - name: Start ollama container
+        run: |
+          IMAGE="ghcr.io/${{ github.repository }}:${{ needs.build.outputs.image_version }}"
+          mkdir -p /tmp/ollama-models /tmp/bench-files
+          docker run -d \
+            --name ollama-bench \
+            -v /tmp/hf-model:/tmp/hf-model:ro \
+            -v /tmp/ollama-models:/root/.ollama/models \
+            -v /tmp/bench-files:/tmp/bench-files \
+            --entrypoint /usr/bin/ollama \
+            "$IMAGE" serve
+
+      - name: Wait for ollama ready
+        run: |
+          for i in $(seq 1 60); do
+            docker exec ollama-bench curl -sf http://localhost:11434/health >/dev/null 2>&1 \
+              && { echo "Ready after ${i}s"; exit 0; }
+            sleep 1
+          done
+          echo "Timed out" >&2; docker logs ollama-bench >&2; exit 1
+
+      # ── Benchmarks ──────────────────────────────────────────────────────────
+      - name: Benchmark quantizations
+        run: |
+          BENCH_DIR=/tmp/bench-files
+          OLLAMA_MODELS=/tmp/ollama-models
+
+          fmt_dur() { (( $1 >= 60 )) && echo "$(($1/60))m $(($1%60))s" || echo "${1}s"; }
+
+          get_gguf_size() {
+            local manifest="$OLLAMA_MODELS/manifests/library/$1/latest"
+            [[ -f "$manifest" ]] || { echo "—"; return; }
+            local b
+            b=$(jq -r '[.layers[] | select(.mediaType | contains("model")) | .size] | add // 0' "$manifest" 2>/dev/null)
+            [[ -z "$b" || "$b" == "null" || "$b" == "0" ]] && { echo "—"; return; }
+            (( b >= 1073741824 )) && awk "BEGIN{printf \"%.2f GiB\", $b/1073741824}" && return
+            (( b >= 1048576    )) && awk "BEGIN{printf \"%.2f MiB\", $b/1048576}"    && return
+            echo "${b} B"
+          }
+
+          # Run one ollama create; append a row to the summary.
+          # Args: quant  from_label  modelfile_content  [--quantize TYPE]
+          create_and_bench() {
+            local quant=$1 from_label=$2 modelfile_content=$3 quant_flag=${4:-}
+            local model_name
+            model_name="qwen25-$(printf '%s' "$quant" | tr '[:upper:]_' '[:lower:]-')"
+            local modelfile="$BENCH_DIR/Modelfile-${model_name}"
+            printf '%s\n' "$modelfile_content" > "$modelfile"
+
+            local t0 t1 rc=0
+            t0=$(date +%s)
+            # shellcheck disable=SC2086
+            docker exec ollama-bench ollama create "$model_name" -f "$modelfile" $quant_flag \
+              > "$BENCH_DIR/log-${model_name}.txt" 2>&1 || rc=$?
+            t1=$(date +%s)
+
+            local dur size status
+            dur=$(fmt_dur $((t1 - t0)))
+            if [[ $rc -eq 0 ]]; then
+              size=$(get_gguf_size "$model_name"); status="✅"
+            else
+              size="—"; status="❌"
+              echo "--- $quant failed (rc=$rc) ---" >&2
+              cat "$BENCH_DIR/log-${model_name}.txt" >&2
+            fi
+            printf '| `%s` | %s | %s | %s | %s |\n' \
+              "$quant" "$from_label" "$dur" "$size" "$status" >> "$GITHUB_STEP_SUMMARY"
+          }
+
+          IMAGE="ghcr.io/${{ github.repository }}:${{ needs.build.outputs.image_version }}"
+          {
+            echo "# Quantization Benchmarks — Qwen/Qwen2.5-0.5B"
+            echo ""
+            echo "> **Model**: [Qwen/Qwen2.5-0.5B](https://huggingface.co/Qwen/Qwen2.5-0.5B) · safetensors input"
+            echo ">"
+            echo "> **Image**: \`$IMAGE\`"
+            echo ">"
+            echo "> **Runner**: ubuntu-latest (CPU-only, $(nproc) vCPUs) · $(date -u '+%Y-%m-%d %H:%M UTC')"
+            echo ""
+            echo "| Quant | From | Duration | GGUF Size | Status |"
+            echo "|:------|:-----|:--------:|----------:|:------:|"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          # Step 1: safetensors → F16 (full conversion)
+          create_and_bench "F16" "safetensors" "FROM /tmp/hf-model"
+
+          # Step 2: requantise from F16 — failures for unsupported types are expected
+          F16_FROM="FROM qwen25-f16"
+          for QUANT in Q8_0 Q5_K_M Q5_K_S Q4_K_M Q4_K_S Q4_0 Q3_K_M Q2_K; do
+            create_and_bench "$QUANT" "F16" "$F16_FROM" "--quantize $QUANT"
+          done
+
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "_Unsupported quant types show ❌ — expected until ParseFileType covers them._" \
+            >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Cleanup
+        if: always()
+        run: docker rm -f ollama-bench 2>/dev/null || true
