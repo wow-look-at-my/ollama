@@ -295,7 +295,10 @@ func ConvertQwen35MTPDraft(fsys fs.FS, f *os.File, baseKV ggml.KV, baseTensors [
 			NumNextNPredictLayers: nextn,
 		},
 	}
-	ts, err := parseTensors(fsys, strings.NewReplacer(q.Replacements()...))
+	ts, cleanup, err := parseTensors(fsys, strings.NewReplacer(q.Replacements()...))
+	if cleanup != nil {
+		defer cleanup()
+	}
 	if err != nil {
 		return err
 	}

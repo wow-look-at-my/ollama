@@ -217,7 +217,10 @@ func embeddingGemmaDenseTensorName(modulePath string) (string, bool) {
 func (m *embeddingGemmaModel) extraTensors(fsys fs.FS) ([]Tensor, error) {
 	var extra []Tensor
 	for _, dense := range m.denseModules {
-		ts, err := parseSafetensors(fsys, strings.NewReplacer("linear.", dense.tensorName+"."), dense.path)
+		ts, cleanup, err := parseSafetensors(fsys, strings.NewReplacer("linear.", dense.tensorName+"."), dense.path)
+		if cleanup != nil {
+			defer cleanup()
+		}
 		if err != nil {
 			return nil, err
 		}
