@@ -167,6 +167,32 @@ llama-server loads the assistant into the target → server routes to the single
 `common_speculative_impl_gemma4_mtp` drives `llama_decode_mtp`. NOT yet runtime-tested with real
 gemma4 + assistant GGUFs (no weights on hand); compile/type-check only.
 
+### UPREV BUILD-BREAKAGE REPAIRS (the ollama fork did not compile after the uprev merge)
+
+The uprev merge (`a88a73bb`/master) left the ollama Go tree non-compiling — `go build .` failed
+in a chain of spots (CI `docker-build` had been red for many commits, predating all MTP work).
+Found them by iterating whole-module `go vet ./...` in Docker (golang:1.26) as the oracle — `go
+build`/`go test` are blocked by the `recommend-go-toolchain` hook, and `go-toolchain` itself
+runs in-container but hard-gates on `go generate` (npm UI build + mlx), so a bare container can't
+complete its flow; CI doesn't use go-toolchain anyway (raw `go build`). Fixes (`43c17094`,
+`836787b9`, `8eefb006`):
+- `api/types.go`: duplicate `DraftFiles` (upstream `9db4bdba` + earlier `bf482278`).
+- `convert/{convert_qwen3next,convert_embeddinggemma}.go`: called `parseTensors`/`parseSafetensors`
+  with 2 vars; they return `([]Tensor, func(), error)` — take + `defer` the cleanup.
+- `convert/writeto_bench_test.go`: `writeSafetensorsFile` collided with upstream's test helper →
+  renamed local one to `writeSafetensorsBenchFile`.
+- `server/routes.go`: Tokenize/Detokenize handlers missed the new trailing `shift *bool` arg to
+  `scheduleRunner` → pass `nil`.
+- `cmd/cmd.go`: duplicate `draftFiles := …` block → keep the `createRequestFileNames` one.
+- `runner/ollamarunner/mtp.go`: DELETED. The uprev (#16031) removed the entire pure-Go runner
+  engine; only this orphan remained (refs gone `Sequence`/`Server`, imported by nothing). The Go
+  MTP reference survives in git history (`bf482278`) + the atomic fork.
+Whole-module `go vet` now shows no package build errors. Two vet-only LINTS remain and do NOT
+fail `go build` (so they don't block CI `docker-build`): `tokenizer/bytepairencoding_test.go:542`
+`slices.Collect` result unused (benchmark), and `x/imagegen/mlx/compile.go:74` unsafe.Pointer
+(Apple-only path). NOTE the gitignored `dev/go-mod/` local go-toolchain cache must be excluded
+when copying the tree into a build container — `go mod tidy` chokes on its `@version` dir names.
+
 ## INTEGRATION REALITY (verified by reading post-uprev ollama-fork): ollama → llama-server only
 
 Mapped how ollama actually runs gemma4 (Explore sweep of the fork):
