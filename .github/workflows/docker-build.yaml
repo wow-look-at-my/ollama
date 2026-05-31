@@ -52,33 +52,26 @@ jobs:
       - name: Verify ollama binary
         run: docker run --rm ghcr.io/${{ github.repository }}:${{ steps.meta.outputs.version }} --version
 
-  # Publish the built image to buildhost's OCI registry as a docker image
-  # (not a bare binary): re-tag the image the build job pushed to ghcr and push
-  # it to buildhost.
+  # Build the image and push it to buildhost's OCI registry as a docker image
+  # (not a bare binary), in one step. The build is a cache hit on the build
+  # job's gha layer cache, so this just assembles and pushes.
   publish:
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v3
+      - uses: actions/checkout@v4
+      - name: Build and publish image to buildhost
+        uses: wow-look-at-my/buildhost/.github/actions/buildhost-publish-docker@claude/sharp-cerf-fc9Vz
         with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Log in to buildhost
-        uses: wow-look-at-my/buildhost/.github/actions/buildhost-docker-login@claude/sharp-cerf-fc9Vz
-      - name: Push image to buildhost
-        run: |
-          IMG=ghcr.io/${{ github.repository }}:${{ needs.build.outputs.image_tag }}
-          docker pull "$IMG"
-          docker tag "$IMG" pazer.build/ollama:${{ github.sha }}
-          docker tag "$IMG" pazer.build/ollama:latest
-          docker push pazer.build/ollama:${{ github.sha }}
-          docker push pazer.build/ollama:latest
+          context: .
+          tags: |
+            ${{ github.sha }}
+            latest
 
   bench:
-    # needs: build so we can read needs.build.outputs.image_tag for the container field
-    needs: [build, publish]
+    # needs: build so we can read needs.build.outputs.image_tag for the container
+    # field (and so it runs off ghcr independently of the buildhost publish).
+    needs: [build]
     runs-on: ubuntu-latest
     defaults:
       run:
