@@ -177,7 +177,10 @@ jobs:
           test -x "$RUNNER_TEMP/ollama-local/lib/ollama/llama-quantize"
   windows:
     needs: [changes]
-    if: needs.changes.outputs.changed == 'True'
+    # Windows CI is off by default on this fork (not a target we care about). It needs no
+    # self-hosted runner if enabled - runs-on is windows-latest below - so to turn it on just
+    # set repo variable ENABLE_WINDOWS_CI=1.
+    if: needs.changes.outputs.changed == 'True' && vars.ENABLE_WINDOWS_CI == '1'
     strategy:
       matrix:
         include:
