@@ -171,7 +171,11 @@ jobs:
           test -x "$RUNNER_TEMP/ollama-local/lib/ollama/llama-quantize"
   windows:
     needs: [changes]
-    if: needs.changes.outputs.changed == 'True'
+    # The 'windows' label is a self-hosted runner only upstream provides. On forks that don't
+    # run a Windows runner, skip this job so it doesn't sit perpetually queued on every PR.
+    # To enable it on a fork, add a Windows self-hosted runner labelled 'windows' and either
+    # set repo variable ENABLE_WINDOWS_CI=1 or remove this guard.
+    if: needs.changes.outputs.changed == 'True' && (github.repository == 'ollama/ollama' || vars.ENABLE_WINDOWS_CI == '1')
     strategy:
       matrix:
         include:
