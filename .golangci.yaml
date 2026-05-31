@@ -19,6 +19,11 @@ linters:
   disable:
     - errcheck
     - usestdlibvars
+  exclusions:
+    # Vendored JS deps (installed by `npm ci` before lint) ship Go files we don't own,
+    # e.g. app/ui/app/node_modules/flatted/golang/... — never lint them.
+    paths:
+      - node_modules
   settings:
     govet:
       disable:
@@ -49,3 +54,6 @@ formatters:
   enable:
     - gofmt
     - gofumpt
+  exclusions:
+    paths:
+      - node_modules
