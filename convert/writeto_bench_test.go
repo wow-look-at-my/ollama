@@ -15,7 +15,7 @@ import (
 
 const benchElems = 1 << 20 // 1M elements per tensor
 
-func writeSafetensorsFile(b *testing.B, dir string, dtype string, nelems int) string {
+func writeSafetensorsBenchFile(b *testing.B, dir string, dtype string, nelems int) string {
 	b.Helper()
 
 	var elemSize int
@@ -74,7 +74,7 @@ func writeSafetensorsFile(b *testing.B, dir string, dtype string, nelems int) st
 func benchRealWriteTo(b *testing.B, dtype string, shape []uint64) {
 	b.Helper()
 	dir := b.TempDir()
-	writeSafetensorsFile(b, dir, dtype, benchElems)
+	writeSafetensorsBenchFile(b, dir, dtype, benchElems)
 
 	fsys := os.DirFS(dir)
 	replacer := nopReplacer()
