@@ -109,9 +109,10 @@ FROM cuda-13-deps AS llama-server-cuda_v13
 COPY LLAMA_CPP_VERSION .
 COPY llama/server llama/server
 COPY llama/compat llama/compat
-# Fork customization: build only for the target GPU (RTX A6000 = sm_86) instead of the
-# preset's 11 virtual archs. Override via --build-arg CUDA_ARCHITECTURES=... if needed.
-ARG CUDA_ARCHITECTURES=86
+# Fork customization: build ONLY native sm_86 SASS for the RTX A6000. The preset built 11
+# *-virtual (PTX) archs; "86" alone would still embed PTX as a JIT fallback. "86-real" drops
+# the PTX entirely — only the real cubin that runs on this card. Override via --build-arg.
+ARG CUDA_ARCHITECTURES=86-real
 RUN --mount=type=cache,target=/root/.ccache \
     cmake -S llama/server --preset llama_cuda_v13_linux -DCMAKE_CUDA_ARCHITECTURES=${CUDA_ARCHITECTURES} \
         && cmake --build build/llama-server-cuda_v13 -- -l $(nproc) \
