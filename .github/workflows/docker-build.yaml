@@ -204,3 +204,5 @@ jobs:
               '',
               '_Unsupported quant types show ❌ — expected until ParseFileType covers them._',
             ].join('\n')).write();
+
+# chunked-push validation (sharp-cerf): builder uses ghcr.io/wow-look-at-my/buildkit:chunked
