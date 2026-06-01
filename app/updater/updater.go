@@ -322,6 +322,15 @@ type Updater struct {
 	cancelDownload     context.CancelFunc
 	cancelDownloadLock sync.Mutex
 	checkNow           chan struct{}
+	wg                 sync.WaitGroup // tracks the background checker goroutine
+}
+
+// Wait blocks until the background updater checker goroutine has fully exited
+// (after its context is cancelled). This drains any in-flight download so a
+// caller can safely tear down resources the checker writes to — e.g. the
+// staging directory — without racing the goroutine.
+func (u *Updater) Wait() {
+	u.wg.Wait()
 }
 
 // CancelOngoingDownload cancels any currently running download
@@ -349,7 +358,9 @@ func (u *Updater) TriggerImmediateCheck() {
 func (u *Updater) StartBackgroundUpdaterChecker(ctx context.Context, cb func(string) error) {
 	u.checkNow = make(chan struct{}, 1)
 	u.checkNow <- struct{}{} // Trigger first check after initial delay
+	u.wg.Add(1)
 	go func() {
+		defer u.wg.Done()
 		// Don't blast an update message immediately after startup
 		time.Sleep(UpdateCheckInitialDelay)
 		slog.Info("beginning update checker", "interval", UpdateCheckInterval)

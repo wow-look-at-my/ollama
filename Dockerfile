@@ -14,8 +14,12 @@ ARG VULKANVERSION=1.4.321.1
 FROM scratch AS local-mlx
 FROM scratch AS local-mlx-c
 
-FROM --platform=linux/amd64 rocm/dev-almalinux-8:${ROCMVERSION}-complete AS base-amd64
-RUN dnf install -y yum-utils ccache gcc-toolset-11-gcc gcc-toolset-11-gcc-c++ gcc-toolset-11-binutils \
+# Fork customization: vanilla almalinux:8 instead of the ~30GB rocm/dev-*-complete base.
+# We dropped the ROCm build, so its SDK is dead weight on every stage's pull. epel-release
+# provides ccache (not in base AppStream); the rest of the toolchain is identical.
+FROM --platform=linux/amd64 almalinux:8 AS base-amd64
+RUN dnf install -y epel-release \
+    && dnf install -y yum-utils ccache git python3 patch gcc-toolset-11-gcc gcc-toolset-11-gcc-c++ gcc-toolset-11-binutils \
     && yum-config-manager --add-repo https://developer.download.nvidia.com/compute/cuda/repos/rhel8/x86_64/cuda-rhel8.repo
 ENV PATH=/opt/rh/gcc-toolset-11/root/usr/bin:$PATH
 
@@ -109,8 +113,12 @@ FROM cuda-13-deps AS llama-server-cuda_v13
 COPY LLAMA_CPP_VERSION .
 COPY llama/server llama/server
 COPY llama/compat llama/compat
+# Fork customization: build ONLY native sm_86 SASS for the RTX A6000. The preset built 11
+# *-virtual (PTX) archs; "86" alone would still embed PTX as a JIT fallback. "86-real" drops
+# the PTX entirely — only the real cubin that runs on this card. Override via --build-arg.
+ARG CUDA_ARCHITECTURES=86-real
 RUN --mount=type=cache,target=/root/.ccache \
-    cmake -S llama/server --preset llama_cuda_v13_linux \
+    cmake -S llama/server --preset llama_cuda_v13_linux -DCMAKE_CUDA_ARCHITECTURES=${CUDA_ARCHITECTURES} \
         && cmake --build build/llama-server-cuda_v13 -- -l $(nproc) \
         && cmake --install build/llama-server-cuda_v13 --component llama-server --strip
 
@@ -235,11 +243,11 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
 #
 
 FROM --platform=linux/amd64 scratch AS amd64
+# Fork customization: ship only CPU (provides the llama-server binary + ggml-base/ggml-cpu)
+# and the CUDA 13 GPU backend. Dropped CUDA v12 (duplicate of v13), Vulkan, and MLX — none
+# are used on this hardware (RTX A6000), and building them was turning a ~5min build into 4h.
 COPY --from=llama-server-cpu      dist/lib/ollama /lib/ollama/
-COPY --from=llama-server-cuda_v12 dist/lib/ollama /lib/ollama/
 COPY --from=llama-server-cuda_v13 dist/lib/ollama /lib/ollama/
-COPY --from=llama-server-vulkan   dist/lib/ollama /lib/ollama/
-COPY --from=mlx     /go/src/github.com/ollama/ollama/dist/lib/ollama /lib/ollama/
 
 FROM --platform=linux/arm64 scratch AS arm64
 COPY --from=llama-server-cpu dist/lib/ollama /lib/ollama/
