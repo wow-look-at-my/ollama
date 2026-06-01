@@ -14,8 +14,12 @@ ARG VULKANVERSION=1.4.321.1
 FROM scratch AS local-mlx
 FROM scratch AS local-mlx-c
 
-FROM --platform=linux/amd64 rocm/dev-almalinux-8:${ROCMVERSION}-complete AS base-amd64
-RUN dnf install -y yum-utils ccache gcc-toolset-11-gcc gcc-toolset-11-gcc-c++ gcc-toolset-11-binutils \
+# Fork customization: vanilla almalinux:8 instead of the ~30GB rocm/dev-*-complete base.
+# We dropped the ROCm build, so its SDK is dead weight on every stage's pull. epel-release
+# provides ccache (not in base AppStream); the rest of the toolchain is identical.
+FROM --platform=linux/amd64 almalinux:8 AS base-amd64
+RUN dnf install -y epel-release \
+    && dnf install -y yum-utils ccache gcc-toolset-11-gcc gcc-toolset-11-gcc-c++ gcc-toolset-11-binutils \
     && yum-config-manager --add-repo https://developer.download.nvidia.com/compute/cuda/repos/rhel8/x86_64/cuda-rhel8.repo
 ENV PATH=/opt/rh/gcc-toolset-11/root/usr/bin:$PATH
 
