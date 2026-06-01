@@ -52,21 +52,26 @@ jobs:
       - name: Verify ollama binary
         run: docker run --rm ghcr.io/${{ github.repository }}:${{ steps.meta.outputs.version }} --version
 
-  # Build the image and push it to buildhost's OCI registry as a docker image
-  # (not a bare binary), in one step. The build is a cache hit on the build
-  # job's gha layer cache, so this just assembles and pushes.
+  # Push the image to buildhost's OCI registry as a docker image (not a bare
+  # binary). Log in via the standalone buildhost-docker-login composite, then
+  # build+push with buildx (a cache hit on the build job's gha layer cache).
   publish:
     needs: build
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Build and publish image to buildhost
-        uses: wow-look-at-my/buildhost/.github/actions/buildhost-publish-docker@claude/sharp-cerf-fc9Vz
+      - uses: docker/setup-buildx-action@v3
+      - name: Log in to buildhost
+        uses: wow-look-at-my/buildhost/.github/actions/buildhost-docker-login@claude/sharp-cerf-fc9Vz
+      - name: Build and push to buildhost
+        uses: docker/build-push-action@v6
         with:
           context: .
+          push: true
           tags: |
-            ${{ github.sha }}
-            latest
+            pazer.build/ollama:${{ github.sha }}
+            pazer.build/ollama:latest
+          cache-from: type=gha
 
   bench:
     # needs: build so we can read needs.build.outputs.image_tag for the container
