@@ -646,17 +646,6 @@ jobs:
           docker buildx imagetools create $(echo '${{ steps.metadata.outputs.json }}' | jq -cr '.tags | map("-t", .) | join(" ")') $(cat *-${{ matrix.suffix }}.txt | xargs printf '${{ vars.DOCKER_REPO }}@%s ')
           docker buildx imagetools inspect ${{ vars.DOCKER_REPO }}:${{ steps.metadata.outputs.version }}
         working-directory: ${{ runner.temp }}
-      # Mirror the multi-arch release image to buildhost. imagetools copies the
-      # referenced manifests/blobs into buildhost's registry push API.
-      - name: Log in to buildhost
-        uses: wow-look-at-my/buildhost/.github/actions/buildhost-docker-login@master
-      - name: Push release image to buildhost
-        run: |
-          docker buildx imagetools create \
-            -t pazer.build/ollama:${{ steps.metadata.outputs.version }}${{ matrix.suffix }} \
-            $(cat *-${{ matrix.suffix }}.txt | xargs printf '${{ vars.DOCKER_REPO }}@%s ')
-          docker buildx imagetools inspect pazer.build/ollama:${{ steps.metadata.outputs.version }}${{ matrix.suffix }}
-        working-directory: ${{ runner.temp }}
 
   # Final release process
   release:
