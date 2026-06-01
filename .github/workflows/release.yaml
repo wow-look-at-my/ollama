@@ -617,6 +617,10 @@ jobs:
     runs-on: linux
     environment: release
     needs: [docker-build-push]
+    permissions:
+      id-token: write
+      contents: read
+      actions: read
     steps:
       - uses: docker/login-action@v3
         with:
