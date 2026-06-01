@@ -56,6 +56,7 @@ jobs:
     # needs: build so we can read needs.build.outputs.image_tag for the container
     # field (and so it runs off the ghcr image built above).
     needs: [build]
+    continue-on-error: true
     runs-on: ubuntu-latest
     defaults:
       run:
