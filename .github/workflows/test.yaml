@@ -361,11 +361,8 @@ jobs:
   test:
     needs: [changes]
     strategy:
-      # Linux-only target. macOS/Windows were dropped: the only delta they ran was the
-      # macOS/Windows-gated `updater_live` app test, which flakes on a TempDir cleanup race
-      # ("RemoveAll cleanup: directory not empty") unrelated to anything this fork ships.
       matrix:
-        os: [ubuntu-latest]
+        os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     env:
       CGO_ENABLED: '1'

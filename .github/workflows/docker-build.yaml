@@ -64,10 +64,6 @@ jobs:
 
   publish:
     needs: build
-    # Off until the buildhost is ready: pazer.build returns 404 on POST /projects/ollama/releases
-    # (no 'ollama' project registered there yet), which reds the whole run. Register the project
-    # on pazer.build, then set repo variable ENABLE_BUILDHOST_PUBLISH=1 to turn this back on.
-    if: vars.ENABLE_BUILDHOST_PUBLISH == '1'
     runs-on: ubuntu-latest
     steps:
       - uses: wow-look-at-my/buildhost/.github/actions/buildhost-publish@master

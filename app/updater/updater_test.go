@@ -285,6 +285,7 @@ func TestBackgroundCheckerSkipsAlreadyStagedETagDownload(t *testing.T) {
 		}
 	}
 	cancel()
+	updater.Wait() // ensure the checker goroutine has stopped before asserting/cleaning up the staging dir
 
 	stageFilename, err := updateStagePath(UpdateStageDir, getETag, Installer)
 	if err != nil {
@@ -364,6 +365,7 @@ func TestBackgoundChecker(t *testing.T) {
 	}
 
 	updater.StartBackgroundUpdaterChecker(ctx, cb)
+	t.Cleanup(updater.Wait) // drain the checker goroutine before t.TempDir cleanup (see TestAutoUpdateReenabledDownloadsUpdate)
 	select {
 	case <-stallTimer.C:
 		t.Fatal("stalled")
@@ -426,6 +428,7 @@ func TestAutoUpdateDisabledSkipsDownload(t *testing.T) {
 	}
 
 	updater.StartBackgroundUpdaterChecker(ctx, cb)
+	t.Cleanup(updater.Wait) // drain the checker goroutine before t.TempDir cleanup (see TestAutoUpdateReenabledDownloadsUpdate)
 
 	// Wait enough time for multiple check cycles
 	time.Sleep(50 * time.Millisecond)
@@ -488,6 +491,10 @@ func TestAutoUpdateReenabledDownloadsUpdate(t *testing.T) {
 	}
 
 	upd.StartBackgroundUpdaterChecker(ctx, cb)
+	// Drain the background checker before t.TempDir's RemoveAll runs: cancelling the context
+	// only signals the goroutine; without waiting, an in-flight download can still be writing
+	// to UpdateStageDir during cleanup ("directory not empty").
+	t.Cleanup(upd.Wait)
 
 	// Wait for a few cycles with auto-update disabled - no download should happen
 	time.Sleep(50 * time.Millisecond)
@@ -615,6 +622,7 @@ func TestTriggerImmediateCheck(t *testing.T) {
 	}
 
 	updater.StartBackgroundUpdaterChecker(ctx, cb)
+	t.Cleanup(updater.Wait) // drain the checker goroutine before t.TempDir cleanup (see TestAutoUpdateReenabledDownloadsUpdate)
 
 	// Wait for the initial check that fires after the initial delay
 	select {
