@@ -19,7 +19,7 @@ FROM scratch AS local-mlx-c
 # provides ccache (not in base AppStream); the rest of the toolchain is identical.
 FROM --platform=linux/amd64 almalinux:8 AS base-amd64
 RUN dnf install -y epel-release \
-    && dnf install -y yum-utils ccache gcc-toolset-11-gcc gcc-toolset-11-gcc-c++ gcc-toolset-11-binutils \
+    && dnf install -y yum-utils ccache git python3 patch gcc-toolset-11-gcc gcc-toolset-11-gcc-c++ gcc-toolset-11-binutils \
     && yum-config-manager --add-repo https://developer.download.nvidia.com/compute/cuda/repos/rhel8/x86_64/cuda-rhel8.repo
 ENV PATH=/opt/rh/gcc-toolset-11/root/usr/bin:$PATH
 
