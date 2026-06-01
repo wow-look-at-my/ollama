@@ -649,7 +649,7 @@ jobs:
       # Mirror the multi-arch release image to buildhost. imagetools copies the
       # referenced manifests/blobs into buildhost's registry push API.
       - name: Log in to buildhost
-        uses: wow-look-at-my/buildhost/.github/actions/buildhost-docker-login@claude/sharp-cerf-fc9Vz
+        uses: wow-look-at-my/buildhost/.github/actions/buildhost-docker-login@master
       - name: Push release image to buildhost
         run: |
           docker buildx imagetools create \
