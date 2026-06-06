@@ -24,10 +24,7 @@ intentionally skipped so a developer can iterate on a local llama.cpp tree.
   KV edits, tensor renames, skip-prefix tracking, tensor load operations, and
   small tensor repacking primitives.
 - `llama-cpp-hooks.patch` - small additive call-site edits in llama.cpp files.
-  It touches `src/llama-model-loader.cpp` and `tools/mtmd/clip.cpp` (the GGUF
-  compat call sites) plus `tools/server/server-common.h`,
-  `tools/server/server-context.cpp` and `tools/server/server-http.cpp` (the
-  model-load-progress hook; see "Model-load progress" below).
+  It currently touches `src/llama-model-loader.cpp` and `tools/mtmd/clip.cpp`.
 - `compat.cmake`, `apply-patch.cmake` - CMake glue and an idempotent patch
   applier used by `llama/server/CMakeLists.txt`.
 
@@ -62,23 +59,28 @@ llama.cpp-compatible on disk.
 
 ## Model-load progress
 
-Independent of the GGUF compat hooks, the patch also surfaces llama.cpp's
-already-computed model-load fraction so Ollama can report a real 0..1 progress
-value while a cold model loads into memory (instead of an indefinite spinner):
+Model-load progress is **not** part of this patch — it lives directly in the
+pinned llama.cpp source (`LLAMA_CPP_VERSION`, the `gemma4-mtp-b9409` line). The
+server reports the load fraction llama.cpp already computes so Ollama can show a
+real 0..1 value while a cold model loads (instead of an indefinite spinner):
 
-1. `tools/server/server-common.h` adds a header-only `server_load_progress()`
-   accessor returning a shared `std::atomic<float>` in `[0,1]`.
-2. `tools/server/server-context.cpp` sets `params.load_progress_callback` before
-   `common_init_from_params()`, so the model loader's `progress_callback`
-   (`size_done / size_data` in `llama_model_loader::load_all_data`) stores the
-   fraction into that atomic as tensors are read.
-3. `tools/server/server-http.cpp` makes the not-ready middleware answer the
-   `/health` and `/v1/health` endpoints with
-   `{"status":"loading model","progress":<float 0..1>}` instead of the generic
-   503 error body, so `llm/llama_server.go` `getServerStatus` can parse the
-   fraction. This is additive: an unmodified llama-server omits `progress` and
-   the Go side reads it as 0/absent. See `docs/api.md` (`/api/ps`) for how the
-   fraction reaches `/api/ps?include=loading`.
+- `tools/server/server-common.h` adds a header-only `server_load_progress()`
+  accessor returning a shared `std::atomic<float>` in `[0,1]`.
+- `tools/server/server-context.cpp` sets `params.load_progress_callback` before
+  `common_init_from_params()`, so the model loader's `progress_callback`
+  (`size_done / size_data` in `llama_model_loader::load_all_data`) stores the
+  fraction into that atomic as tensors are read.
+- `tools/server/server-http.cpp` makes the not-ready middleware answer the
+  `/health` and `/v1/health` endpoints with
+  `{"status":"loading model","progress":<float 0..1>}` instead of the generic
+  503 error body.
+
+`llm/llama_server.go` `getServerStatus` parses the fraction (additive: an
+unmodified llama-server omits `progress` and the Go side reads it as 0/absent)
+and surfaces it via `/api/ps?include=loading` — see `docs/api.md`. To re-derive
+the change against the pinned source, see the `wow-look-at-my/llama.cpp` commit
+on the `gemma4-mtp-b9409` line that `LLAMA_CPP_VERSION` points at.
+
 
 ## Supported Transformations
 
@@ -134,9 +136,6 @@ cd /path/to/llama.cpp
 git diff -- \
     src/llama-model-loader.cpp \
     tools/mtmd/clip.cpp \
-    tools/server/server-common.h \
-    tools/server/server-context.cpp \
-    tools/server/server-http.cpp \
     > /path/to/ollama/llama/compat/llama-cpp-hooks.patch
 ```
 
