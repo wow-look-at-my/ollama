@@ -1,5 +1,5 @@
 diff --git a/src/llama-model-loader.cpp b/src/llama-model-loader.cpp
-index 4e65a45..a6e4fe2 100644
+index c645d07..a4d565d 100644
 --- a/src/llama-model-loader.cpp
 +++ b/src/llama-model-loader.cpp
 @@ -4,6 +4,7 @@
@@ -38,7 +38,7 @@ index 4e65a45..a6e4fe2 100644
              // make sure there is no duplicated tensor names
              if (weights_map.find(tensor_name) != weights_map.end()) {
                  throw std::runtime_error(format("invalid model: tensor '%s' is duplicated", ggml_get_name(cur)));
-@@ -1375,6 +1383,7 @@ void llama_model_loader::get_mapping_range(size_t * first, size_t * last, void *
+@@ -1382,6 +1390,7 @@ void llama_model_loader::get_mapping_range(size_t * first, size_t * last, void *
  
  void llama_model_loader::load_data_for(struct ggml_tensor * cur) const {
      const auto & w = require_weight(ggml_get_name(cur));
@@ -46,7 +46,7 @@ index 4e65a45..a6e4fe2 100644
  
      if (use_mmap) {
          const auto & mapping = mappings.at(w.idx);
-@@ -1525,6 +1534,7 @@ bool llama_model_loader::load_all_data(
+@@ -1532,6 +1541,7 @@ bool llama_model_loader::load_all_data(
          }
  
          size_t n_size = ggml_nbytes(cur);
@@ -55,7 +55,7 @@ index 4e65a45..a6e4fe2 100644
          if (use_mmap) {
              const auto & mapping = mappings.at(weight->idx);
 diff --git a/tools/mtmd/clip.cpp b/tools/mtmd/clip.cpp
-index 2e0cfa6..a0f2955 100644
+index 7bb702b..c74d50e 100644
 --- a/tools/mtmd/clip.cpp
 +++ b/tools/mtmd/clip.cpp
 @@ -10,6 +10,8 @@
@@ -67,7 +67,7 @@ index 2e0cfa6..a0f2955 100644
  #include <algorithm>
  #include <cassert>
  #include <cmath>
-@@ -1009,6 +1011,11 @@ struct clip_model_loader {
+@@ -1023,6 +1025,11 @@ struct clip_model_loader {
  
          ctx_meta.reset(meta);
  
@@ -79,7 +79,7 @@ index 2e0cfa6..a0f2955 100644
          const int n_tensors = gguf_get_n_tensors(ctx_gguf.get());
  
          // print gguf info
-@@ -2611,6 +2618,7 @@ struct clip_model_loader {
+@@ -2632,6 +2639,7 @@ struct clip_model_loader {
                  auto it_off = tensor_offset.find(t->name);
                  GGML_ASSERT(it_off != tensor_offset.end() && "no offset for tensor");
                  const size_t offset = it_off->second;
@@ -87,3 +87,74 @@ index 2e0cfa6..a0f2955 100644
                  fin.seekg(offset, std::ios::beg);
                  if (!fin) {
                      throw std::runtime_error(string_format("%s: failed to seek for tensor %s\n", __func__, t->name));
+diff --git a/tools/server/server-common.h b/tools/server/server-common.h
+index c28558d..41832ed 100644
+--- a/tools/server/server-common.h
++++ b/tools/server/server-common.h
+@@ -12,9 +12,20 @@
+ #include <string>
+ #include <vector>
+ #include <cinttypes>
++#include <atomic>
+ 
+ using json = nlohmann::ordered_json;
+ 
++// Ollama compat: model-load progress in [0,1], published by the model-loader
++// progress callback during server_context::load_model() and read by the /health
++// middleware (server-http.cpp) so the Ollama scheduler can surface a real
++// load-progress fraction while a cold model loads into memory. A function-local
++// static keeps a single shared instance header-only across translation units.
++inline std::atomic<float> & server_load_progress() {
++    static std::atomic<float> progress{0.0f};
++    return progress;
++}
++
+ #define SLT_DBG(slot, fmt, ...) LOG_DBG("slot %12.*s: id %2d | task %d | " fmt, 12, __func__, (slot).id, ((slot).task ? (slot).task->id : -1), __VA_ARGS__)
+ #define SLT_TRC(slot, fmt, ...) LOG_TRC("slot %12.*s: id %2d | task %d | " fmt, 12, __func__, (slot).id, ((slot).task ? (slot).task->id : -1), __VA_ARGS__)
+ #define SLT_INF(slot, fmt, ...) LOG_INF("slot %12.*s: id %2d | task %d | " fmt, 12, __func__, (slot).id, ((slot).task ? (slot).task->id : -1), __VA_ARGS__)
+diff --git a/tools/server/server-context.cpp b/tools/server/server-context.cpp
+index a3897dd..4146d0a 100644
+--- a/tools/server/server-context.cpp
++++ b/tools/server/server-context.cpp
+@@ -880,6 +880,16 @@ private:
+             }
+         }
+ 
++        // Ollama compat: publish llama.cpp's model-load progress (0..1) so the
++        // /health endpoint can report a real fraction while the model loads into
++        // memory. common_init_from_params() forwards this to the model loader,
++        // which calls it with size_done/size_data as tensors are read.
++        server_load_progress().store(0.0f);
++        params_base.load_progress_callback = [](float progress, void * /*user_data*/) -> bool {
++            server_load_progress().store(progress);
++            return true; // continue loading
++        };
++
+         llama_init = common_init_from_params(params_base);
+ 
+         model_tgt = llama_init->model();
+diff --git a/tools/server/server-http.cpp b/tools/server/server-http.cpp
+index 3616b3b..aae1ee6 100644
+--- a/tools/server/server-http.cpp
++++ b/tools/server/server-http.cpp
+@@ -233,6 +233,20 @@ bool server_http_context::init(const common_params & params) {
+ 
+     auto middleware_server_state = [this](const httplib::Request & req, httplib::Response & res) {
+         if (!is_ready.load()) {
++            // Ollama compat: report model-load progress on the health endpoints
++            // while the model loads so the scheduler can surface a real 0..1
++            // fraction. Other endpoints keep returning the generic 503 below.
++            if (req.path == "/health" || req.path == "/v1/health") {
++                res.status = 503;
++                res.set_content(
++                    safe_json_to_str(json {
++                        {"status",   "loading model"},
++                        {"progress", server_load_progress().load()},
++                    }),
++                    "application/json; charset=utf-8"
++                );
++                return false;
++            }
+ #if defined(LLAMA_UI_HAS_ASSETS)
+             if (const auto tmp = string_split<std::string>(req.path, '.');
+                 req.path == "/" || (!tmp.empty() && tmp.back() == "html")) {

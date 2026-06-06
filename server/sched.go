@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/ollama/ollama/api"
@@ -691,13 +692,13 @@ iGPUScan:
 		isImagegen:      slices.Contains(req.model.Config.Capabilities, "image"),
 		totalSize:       totalSize,
 		vramSize:        vramSize,
-		loading:         true,
 		pid:             llama.Pid(),
 		numCtxAuto:      req.numCtxAuto,
 		numBatchAuto:    req.numBatchAuto,
 		useMMapAuto:     req.useMMapAuto,
 		contextShift:    req.contextShift,
 	}
+	runner.loading.Store(true)
 	runner.numParallel = numParallel
 	runner.refMu.Lock() // hold lock until running or aborted
 
@@ -728,7 +729,7 @@ iGPUScan:
 			runner.pid = llama.Pid()
 		}
 		runner.refCount++
-		runner.loading = false
+		runner.loading.Store(false)
 		go func() {
 			<-req.ctx.Done()
 			slog.Debug("context for request finished")
@@ -1297,7 +1298,7 @@ type runnerRef struct {
 
 	llama        llm.LlamaServer
 	pid          int
-	loading      bool          // True only during initial load, then false forever
+	loading      atomic.Bool   // True only during initial load, then false forever. Atomic so PsHandler can read it under loadedMu without taking refMu (held by the load goroutine during load).
 	gpus         []ml.DeviceID // Recorded at time of provisioning
 	discreteGPUs bool          // True if all devices are discrete GPUs - used to skip VRAM recovery check for iGPUs
 	isImagegen   bool          // True if loaded via imagegen runner (vs mlxrunner)
@@ -1346,7 +1347,7 @@ func (runner *runnerRef) needsReload(ctx context.Context, req *LlmRequest) bool 
 	}
 
 	timeout := 10 * time.Second
-	if runner.loading {
+	if runner.loading.Load() {
 		timeout = 2 * time.Minute // Initial load can take a long time for big models on slow systems...
 	}
 

@@ -878,7 +878,7 @@ func TestSchedNeedsReload(t *testing.T) {
 	resp = runner.needsReload(ctx, req)
 	require.True(t, resp)
 	req.model.ProjectorPaths = runner.model.ProjectorPaths
-	runner.loading = true
+	runner.loading.Store(true)
 	req.opts.NumBatch = 1234
 	resp = runner.needsReload(ctx, req)
 	require.True(t, resp)
@@ -2028,6 +2028,7 @@ type mockLlm struct {
 	vramSize          uint64
 	totalSize         uint64
 	contextLength     int
+	loadProgress      float32
 	vramByGPU         map[ml.DeviceID]uint64
 
 	// loadErr, if non-nil, is returned from Load() to simulate a post-spawn
@@ -2100,6 +2101,7 @@ func (s *mockLlm) GetDeviceInfos(ctx context.Context) []ml.DeviceInfo { return n
 func (s *mockLlm) HasExited() bool                                    { return false }
 func (s *mockLlm) GetActiveDeviceIDs() []ml.DeviceID                  { return nil }
 func (s *mockLlm) ContextLength() int                                 { return s.contextLength }
+func (s *mockLlm) LoadProgress() float32                              { return s.loadProgress }
 
 // TestImageGenRunnerCanBeEvicted verifies that an image generation model
 // loaded in the scheduler can be evicted when idle.
