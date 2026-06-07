@@ -41,7 +41,7 @@ jobs:
         with:
           context: .
           # Push layers to ghcr as they build, and also load the image into the
-          # local daemon so the verify/extract steps below can use it.
+          # local daemon so the verify step below can use it.
           push: true
           load: true
           provenance: false
@@ -51,26 +51,11 @@ jobs:
           cache-to: type=gha,mode=max
       - name: Verify ollama binary
         run: docker run --rm ghcr.io/${{ github.repository }}:${{ steps.meta.outputs.version }} --version
-      - name: Extract binary
-        run: |
-          docker create --name extract ghcr.io/${{ github.repository }}:${{ steps.meta.outputs.version }}
-          mkdir -p dist
-          docker cp extract:/usr/bin/ollama dist/ollama_linux_amd64
-          docker rm extract
-      - uses: actions/upload-artifact@v4
-        with:
-          name: go-build
-          path: dist/
-
-  publish:
-    needs: build
-    runs-on: ubuntu-latest
-    steps:
-      - uses: wow-look-at-my/buildhost/.github/actions/buildhost-publish@master
 
   bench:
-    # needs: build so we can read needs.build.outputs.image_tag for the container field
-    needs: [build, publish]
+    # needs: build so we can read needs.build.outputs.image_tag for the container
+    # field (and so it runs off the ghcr image built above).
+    needs: [build]
     runs-on: ubuntu-latest
     defaults:
       run:

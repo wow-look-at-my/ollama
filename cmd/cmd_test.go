@@ -1442,36 +1442,23 @@ func TestCreateHandler(t *testing.T) {
 	}
 }
 
-func TestCreateHandlerDraftQuantizeRequiresExperimental(t *testing.T) {
-	cmd := &cobra.Command{}
-	cmd.Flags().Bool("experimental", false, "")
-	cmd.Flags().String("draft-quantize", "mxfp8", "")
-	cmd.SetContext(t.Context())
 
-	err := CreateHandler(cmd, []string{"test-model"})
-	if err == nil || !strings.Contains(err.Error(), "--draft-quantize requires --experimental") {
-		t.Fatalf("error = %v, want draft-quantize requires experimental", err)
-	}
-}
-
-func TestCreateHandlerDraftAcceptedWithoutExperimental(t *testing.T) {
+func TestCreateHandlerDraftQuantizeRequiresDraft(t *testing.T) {
 	dir := t.TempDir()
 	modelfile := filepath.Join(dir, "Modelfile")
-	if err := os.WriteFile(modelfile, []byte("FROM base\nDRAFT ./assistant\n"), 0o644); err != nil {
+	if err := os.WriteFile(modelfile, []byte("FROM base\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
 	cmd := &cobra.Command{}
 	cmd.Flags().Bool("experimental", false, "")
-	cmd.Flags().String("draft-quantize", "", "")
 	cmd.Flags().String("file", modelfile, "")
+	cmd.Flags().String("draft-quantize", "mxfp8", "")
 	cmd.SetContext(t.Context())
 
 	err := CreateHandler(cmd, []string{"test-model"})
-	// DRAFT no longer requires --experimental; the error (if any) should be
-	// about the model not being found, not about needing --experimental.
-	if err != nil && strings.Contains(err.Error(), "DRAFT requires --experimental") {
-		t.Fatalf("DRAFT should not require --experimental, got: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "--draft-quantize requires a DRAFT model") {
+		t.Fatalf("error = %v, want draft-quantize requires DRAFT", err)
 	}
 }
 

@@ -13,7 +13,6 @@ import (
 	"math"
 	"slices"
 	"strings"
-
 )
 
 type safetensorMetadata struct {
