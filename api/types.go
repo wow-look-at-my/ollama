@@ -559,7 +559,24 @@ type ChatResponse struct {
 	// if requested via the Logprobs parameter.
 	Logprobs []Logprob `json:"logprobs,omitempty"`
 
+	// PromptProgress, when set, is a prompt-processing (prefill) progress update
+	// for a streaming request. It is emitted before the first generated token
+	// while a long prompt is being ingested and carries no message content.
+	PromptProgress *PromptProgress `json:"prompt_progress,omitempty"`
+
 	Metrics
+}
+
+// PromptProgress reports prompt-processing (prefill) progress for a streaming
+// request, surfaced from the runner's return_progress stream. Total is the
+// prompt length in tokens, Cache the count reused from the prompt cache,
+// Processed the number evaluated so far (Processed/Total is the overall
+// fraction done), and TimeMS the elapsed prefill time in milliseconds.
+type PromptProgress struct {
+	Total     int   `json:"total"`
+	Cache     int   `json:"cache"`
+	Processed int   `json:"processed"`
+	TimeMS    int64 `json:"time_ms"`
 }
 
 // DebugInfo contains debug information for template rendering

@@ -136,13 +136,25 @@ type ChatCompletion struct {
 }
 
 type ChatCompletionChunk struct {
-	Id                string        `json:"id"`
-	Object            string        `json:"object"`
-	Created           int64         `json:"created"`
-	Model             string        `json:"model"`
-	SystemFingerprint string        `json:"system_fingerprint"`
-	Choices           []ChunkChoice `json:"choices"`
-	Usage             *Usage        `json:"usage,omitempty"`
+	Id                string          `json:"id"`
+	Object            string          `json:"object"`
+	Created           int64           `json:"created"`
+	Model             string          `json:"model"`
+	SystemFingerprint string          `json:"system_fingerprint"`
+	Choices           []ChunkChoice   `json:"choices"`
+	Usage             *Usage          `json:"usage,omitempty"`
+	PromptProgress    *PromptProgress `json:"prompt_progress,omitempty"`
+}
+
+// PromptProgress carries prompt-processing (prefill) progress on a streamed
+// chunk. It is a non-standard extension (mirrors llama-server's field) emitted
+// on a choices-less chunk before the first generated token; OpenAI clients that
+// don't understand it simply ignore the field and the empty choices array.
+type PromptProgress struct {
+	Total     int   `json:"total"`
+	Cache     int   `json:"cache"`
+	Processed int   `json:"processed"`
+	TimeMS    int64 `json:"time_ms"`
 }
 
 // TODO (https://github.com/ollama/ollama/issues/5259): support []string, []int and [][]int
@@ -341,6 +353,29 @@ func toChunk(id string, r api.ChatResponse, toolCallSent bool) ChatCompletionChu
 			Logprobs: logprobs,
 		}},
 	}
+}
+
+// ToProgressChunk builds a choices-less chunk carrying prompt-processing
+// progress, for streaming responses before the first generated token. Returns
+// the chunk and false when r has no progress to report.
+func ToProgressChunk(id string, r api.ChatResponse) (ChatCompletionChunk, bool) {
+	if r.PromptProgress == nil {
+		return ChatCompletionChunk{}, false
+	}
+	return ChatCompletionChunk{
+		Id:                id,
+		Object:            "chat.completion.chunk",
+		Created:           time.Now().Unix(),
+		Model:             r.Model,
+		SystemFingerprint: "fp_ollama",
+		Choices:           []ChunkChoice{},
+		PromptProgress: &PromptProgress{
+			Total:     r.PromptProgress.Total,
+			Cache:     r.PromptProgress.Cache,
+			Processed: r.PromptProgress.Processed,
+			TimeMS:    r.PromptProgress.TimeMS,
+		},
+	}, true
 }
 
 // ToChunks converts an api.ChatResponse to one or more ChatCompletionChunk values.
