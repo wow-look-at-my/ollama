@@ -1232,6 +1232,7 @@ type llamaServerCompletionResponse struct {
 	StopType string `json:"stop_type"`
 	Timings  struct {
 		PromptN   int     `json:"prompt_n"`
+		CacheN    int     `json:"cache_n"`
 		PromptMS  float64 `json:"prompt_ms"`
 		PredictN  int     `json:"predicted_n"`
 		PredictMS float64 `json:"predicted_ms"`
@@ -1274,6 +1275,7 @@ type llamaServerChatResponse struct {
 	Choices []llamaServerChatChoice `json:"choices"`
 	Timings struct {
 		PromptN   int     `json:"prompt_n"`
+		CacheN    int     `json:"cache_n"`
 		PromptMS  float64 `json:"prompt_ms"`
 		PredictN  int     `json:"predicted_n"`
 		PredictMS float64 `json:"predicted_ms"`
@@ -1502,6 +1504,7 @@ func (s *llamaServerRunner) Completion(ctx context.Context, req CompletionReques
 					Done:               true,
 					DoneReason:         doneReason,
 					PromptEvalCount:    lsResp.Timings.PromptN,
+					PromptCacheCount:   lsResp.Timings.CacheN,
 					PromptEvalDuration: time.Duration(lsResp.Timings.PromptMS * float64(time.Millisecond)),
 					EvalCount:          lsResp.Timings.PredictN,
 					EvalDuration:       time.Duration(lsResp.Timings.PredictMS * float64(time.Millisecond)),
@@ -1798,6 +1801,7 @@ func (s *llamaServerRunner) Chat(ctx context.Context, req ChatRequest, fn func(C
 				resp.Done = true
 				resp.DoneReason = doneReason
 				resp.PromptEvalCount = lsResp.Timings.PromptN
+				resp.PromptCacheCount = lsResp.Timings.CacheN
 				resp.PromptEvalDuration = time.Duration(lsResp.Timings.PromptMS * float64(time.Millisecond))
 				resp.EvalCount = lsResp.Timings.PredictN
 				resp.EvalDuration = time.Duration(lsResp.Timings.PredictMS * float64(time.Millisecond))
