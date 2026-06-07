@@ -588,17 +588,22 @@ type gemma4AssistantConfig struct {
 	UseOrderedEmbeddings     bool   `json:"use_ordered_embeddings"`
 	NumCentroids             uint32 `json:"num_centroids"`
 	CentroidIntermediateTopK uint32 `json:"centroid_intermediate_top_k"`
+	RequiresTargetArch       string `json:"requires_target_arch"`
 	TextConfig               struct {
-		NumHiddenLayers   uint32   `json:"num_hidden_layers"`
-		HiddenSize        uint32   `json:"hidden_size"`
-		NumAttentionHeads uint32   `json:"num_attention_heads"`
-		NumKeyValueHeads  uint32   `json:"num_key_value_heads"`
-		HeadDim           uint32   `json:"head_dim"`
-		GlobalHeadDim     uint32   `json:"global_head_dim"`
-		IntermediateSize  uint32   `json:"intermediate_size"`
-		RMSNormEps        float32  `json:"rms_norm_eps"`
-		LayerTypes        []string `json:"layer_types"`
-		RopeParameters    map[string]*struct {
+		NumHiddenLayers       uint32   `json:"num_hidden_layers"`
+		HiddenSize            uint32   `json:"hidden_size"`
+		NumAttentionHeads     uint32   `json:"num_attention_heads"`
+		NumKeyValueHeads      uint32   `json:"num_key_value_heads"`
+		HeadDim               uint32   `json:"head_dim"`
+		GlobalHeadDim         uint32   `json:"global_head_dim"`
+		IntermediateSize      uint32   `json:"intermediate_size"`
+		RMSNormEps            float32  `json:"rms_norm_eps"`
+		SlidingWindow         uint32   `json:"sliding_window"`
+		NumKVSharedLayers     uint32   `json:"num_kv_shared_layers"`
+		AttentionKEqV         bool     `json:"attention_k_eq_v"`
+		FinalLogitSoftcapping float32  `json:"final_logit_softcapping"`
+		LayerTypes            []string `json:"layer_types"`
+		RopeParameters        map[string]*struct {
 			RopeTheta           float32  `json:"rope_theta"`
 			PartialRotaryFactor *float32 `json:"partial_rotary_factor"`
 		} `json:"rope_parameters"`
@@ -671,4 +676,298 @@ func (p *gemma4Model) DraftKV(draftFsys fs.FS) (KV, error) {
 	}
 
 	return kv, nil
+}
+
+// gemma4AssistantModel converts a Gemma 4 MTP "assistant" (drafter) checkpoint
+// into a standalone GGUF with general.architecture = "gemma4_assistant". Unlike
+// the qwen NextN drafter, the Gemma 4 assistant is a separate model that the
+// runtime loads via --mtp-head and attaches to the target: it cross-attends the
+// target's KV cache (so attention is Q-only), uses the target's last-layer
+// activations via a pre/post projection, and has a centroid-routed LM head.
+type gemma4AssistantModel struct {
+	cfg           gemma4AssistantConfig
+	nEmbdBackbone uint32 // target model n_embd; pre_projection maps from 2*this
+	vocabSize     uint32
+}
+
+func (*gemma4AssistantModel) Replacements() []string {
+	return []string{
+		// ClippableLinear wraps nn.Linear — strip .linear. from the weight path
+		".linear.weight", ".weight",
+		".linear.bias", ".bias",
+
+		// MTP head: target-activation projections, embeddings, centroid LM head
+		"pre_projection", "mtp.pre_projection",
+		"post_projection", "mtp.post_projection",
+		"masked_embedding.centroids", "mtp.centroids",
+		"masked_embedding.token_ordering", "mtp.token_ordering",
+		"model.embed_tokens", "token_embd",
+		"model.norm", "output_norm",
+		"model.layers", "blk",
+
+		// Attention is Q-only — the drafter cross-attends the target's KV cache,
+		// so there are no k_proj/v_proj tensors.
+		"input_layernorm", "attn_norm",
+		"self_attn.q_proj", "attn_q",
+		"self_attn.q_norm", "attn_q_norm",
+		"self_attn.o_proj", "attn_output",
+
+		// MLP
+		"mlp.gate_proj", "ffn_gate",
+		"mlp.down_proj", "ffn_down",
+		"mlp.up_proj", "ffn_up",
+
+		// Norms
+		"post_attention_layernorm", "post_attention_norm",
+		"pre_feedforward_layernorm", "ffn_norm",
+		"post_feedforward_layernorm", "post_ffw_norm",
+
+		// Per-layer output scalar
+		"layer_scalar", "layer_output_scale.weight",
+	}
+}
+
+func (m *gemma4AssistantModel) Tensors(ts []Tensor) []*ggml.Tensor {
+	out := make([]*ggml.Tensor, 0, len(ts)+1)
+	for _, t := range ts {
+		shape := t.Shape()
+		// layer_output_scale is a scalar in the checkpoint; emit it as 1-D.
+		if len(shape) == 0 {
+			shape = []uint64{1}
+		}
+		out = append(out, &ggml.Tensor{
+			Name:     t.Name(),
+			Kind:     t.Kind(),
+			Shape:    shape,
+			WriterTo: t,
+		})
+	}
+
+	// Generate the single global rope_freqs.weight for proportional RoPE on the
+	// full-attention (non-SWA) layers, exactly like the base gemma4 converter.
+	// The gemma4_assistant arch creates blk.%d.rope_freqs per non-SWA layer, but
+	// the tensor-name template "rope_freqs" has no %d, so every layer resolves to
+	// the same name "rope_freqs.weight"; the first non-SWA layer loads it and the
+	// rest reuse it (TENSOR_DUPLICATED). So the file needs exactly one copy.
+	tc := m.cfg.TextConfig
+	if tc.GlobalHeadDim > 0 {
+		globalFreqsSize := tc.GlobalHeadDim / 2
+
+		partialRotaryFactor := float32(0.25)
+		if rp, ok := tc.RopeParameters["full_attention"]; ok && rp != nil && rp.PartialRotaryFactor != nil {
+			partialRotaryFactor = *rp.PartialRotaryFactor
+		}
+		nRotFull := int(float32(tc.GlobalHeadDim) * partialRotaryFactor / 2)
+
+		freqs := make(ropeFactor, globalFreqsSize)
+		for j := range freqs {
+			if j < nRotFull {
+				freqs[j] = 1.0
+			} else {
+				freqs[j] = 1e30 // effectively disable rotation past the rotated portion
+			}
+		}
+		out = append(out, &ggml.Tensor{
+			Name:     "rope_freqs.weight",
+			Kind:     0, // F32
+			Shape:    []uint64{uint64(len(freqs))},
+			WriterTo: freqs,
+		})
+	}
+
+	return out
+}
+
+func (m *gemma4AssistantModel) KV(baseKV ggml.KV) ggml.KV {
+	tc := m.cfg.TextConfig
+	kv := ggml.KV{}
+
+	// Copy the tokenizer (and quantization provenance) verbatim from the base
+	// model. The runtime compares the assistant's vocab text against the target's
+	// (llama_mtp_vocab_matches), so the standalone assistant GGUF must carry the
+	// full tokenizer. A fresh KV (rather than maps.Clone) avoids dragging in stale
+	// gemma4.* hparams that don't apply to the assistant.
+	for k, v := range baseKV {
+		if strings.HasPrefix(k, "tokenizer.") {
+			kv[k] = v
+		}
+	}
+	if v, ok := baseKV["general.quantization_version"]; ok {
+		kv["general.quantization_version"] = v
+	}
+	kv["general.architecture"] = "gemma4_assistant"
+	kv["general.file_type"] = uint32(1) // F16; re-quantized by createModel if requested
+
+	const p = "gemma4_assistant."
+	kv[p+"vocab_size"] = m.vocabSize
+	kv[p+"block_count"] = tc.NumHiddenLayers
+	kv[p+"embedding_length"] = tc.HiddenSize
+	if tc.IntermediateSize > 0 {
+		kv[p+"feed_forward_length"] = tc.IntermediateSize
+	}
+	kv[p+"attention.head_count"] = tc.NumAttentionHeads
+	kv[p+"attention.head_count_kv"] = tc.NumKeyValueHeads
+	kv[p+"attention.key_length"] = tc.GlobalHeadDim
+	kv[p+"attention.value_length"] = tc.GlobalHeadDim
+	kv[p+"attention.key_length_swa"] = tc.HeadDim
+	kv[p+"attention.value_length_swa"] = tc.HeadDim
+	kv[p+"attention.layer_norm_rms_epsilon"] = tc.RMSNormEps
+	if tc.SlidingWindow > 0 {
+		kv[p+"attention.sliding_window"] = tc.SlidingWindow
+	}
+	if tc.NumKVSharedLayers > 0 {
+		kv[p+"attention.shared_kv_layers"] = tc.NumKVSharedLayers
+	}
+	kv[p+"attention.k_eq_v"] = tc.AttentionKEqV
+
+	// Per-layer sliding-window pattern (len == n_layer); required by the loader.
+	if len(tc.LayerTypes) > 0 {
+		pattern := make([]bool, len(tc.LayerTypes))
+		for i, lt := range tc.LayerTypes {
+			pattern[i] = lt == "sliding_attention"
+		}
+		kv[p+"attention.sliding_window_pattern"] = pattern
+	}
+
+	if rp, ok := tc.RopeParameters["full_attention"]; ok && rp != nil {
+		kv[p+"rope.freq_base"] = rp.RopeTheta
+		kv[p+"rope.dimension_count"] = tc.GlobalHeadDim
+	}
+	if rp, ok := tc.RopeParameters["sliding_attention"]; ok && rp != nil {
+		kv[p+"rope.freq_base_swa"] = rp.RopeTheta
+	}
+
+	if tc.FinalLogitSoftcapping > 0 {
+		kv[p+"final_logit_softcapping"] = tc.FinalLogitSoftcapping
+	}
+
+	// MTP assistant-specific metadata.
+	kv[p+"n_embd_backbone"] = m.nEmbdBackbone
+	kv[p+"use_ordered_embeddings"] = m.cfg.UseOrderedEmbeddings
+	if m.cfg.NumCentroids > 0 {
+		kv[p+"n_centroids"] = m.cfg.NumCentroids
+	}
+	if m.cfg.CentroidIntermediateTopK > 0 {
+		kv[p+"centroid_top_k"] = m.cfg.CentroidIntermediateTopK
+	}
+	if m.cfg.RequiresTargetArch != "" {
+		kv[p+"requires_target_arch"] = m.cfg.RequiresTargetArch
+	}
+
+	return kv
+}
+
+func (m *gemma4AssistantModel) validateTensors(tensors []*ggml.Tensor) error {
+	present := make(map[string]bool, len(tensors))
+	for _, t := range tensors {
+		present[t.Name] = true
+	}
+
+	required := []string{
+		"token_embd.weight",
+		"mtp.pre_projection.weight",
+		"mtp.post_projection.weight",
+		"output_norm.weight",
+	}
+	for i := range int(m.cfg.TextConfig.NumHiddenLayers) {
+		for _, suffix := range []string{
+			"attn_norm.weight", "attn_q.weight", "attn_output.weight",
+			"attn_q_norm.weight", "post_attention_norm.weight",
+			"ffn_norm.weight", "ffn_gate.weight", "ffn_up.weight",
+			"ffn_down.weight", "post_ffw_norm.weight",
+		} {
+			required = append(required, fmt.Sprintf("blk.%d.%s", i, suffix))
+		}
+	}
+	if m.cfg.UseOrderedEmbeddings {
+		required = append(required, "mtp.centroids.weight")
+	}
+
+	var missing []string
+	for _, name := range required {
+		if !present[name] {
+			missing = append(missing, name)
+		}
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("gemma4 assistant draft is missing required tensors: %v", missing)
+	}
+	return nil
+}
+
+// ConvertGemma4MTPDraft converts a Gemma 4 MTP assistant (drafter) safetensors
+// checkpoint into a standalone GGUF with general.architecture = "gemma4_assistant".
+// baseKV is the already-converted target model's KV; it supplies the tokenizer
+// (the runtime requires the assistant's vocab to match the target's) and
+// n_embd_backbone (the target's embedding length). The output contains only the
+// assistant's own tensors — it is loaded separately via --mtp-head, not embedded
+// into the target GGUF.
+func ConvertGemma4MTPDraft(fsys fs.FS, f *os.File, baseKV ggml.KV) error {
+	if arch := baseKV.Architecture(); arch != "gemma4" {
+		return fmt.Errorf("gemma4 MTP draft requires a gemma4 base model, got %q", arch)
+	}
+
+	nEmbdBackbone := baseKV.Uint("embedding_length")
+	if nEmbdBackbone == 0 {
+		return fmt.Errorf("gemma4 MTP draft requires a base model with embedding_length")
+	}
+
+	tokens := baseKV.Strings("tokenizer.ggml.tokens")
+	if len(tokens) == 0 {
+		return fmt.Errorf("gemma4 MTP draft requires a base model with a tokenizer (tokenizer.ggml.tokens)")
+	}
+
+	bts, err := fs.ReadFile(fsys, "config.json")
+	if err != nil {
+		return fmt.Errorf("read draft config.json: %w", err)
+	}
+	bts = sanitizeNonFiniteJSON(bts)
+
+	var cfg gemma4AssistantConfig
+	if err := json.Unmarshal(bts, &cfg); err != nil {
+		return fmt.Errorf("parse draft config.json: %w", err)
+	}
+	if cfg.TextConfig.NumHiddenLayers == 0 {
+		return fmt.Errorf("gemma4 MTP draft config is missing text_config.num_hidden_layers")
+	}
+
+	m := &gemma4AssistantModel{
+		cfg:           cfg,
+		nEmbdBackbone: nEmbdBackbone,
+		vocabSize:     uint32(len(tokens)),
+	}
+
+	ts, cleanup, err := parseTensors(fsys, strings.NewReplacer(m.Replacements()...))
+	if cleanup != nil {
+		defer cleanup()
+	}
+	if err != nil {
+		return err
+	}
+	if err := ensureUniqueTensorNames(ts); err != nil {
+		return err
+	}
+
+	tensors := m.Tensors(ts)
+	if len(tensors) == 0 {
+		return fmt.Errorf("gemma4 MTP draft safetensors produced no GGUF tensors")
+	}
+	for _, t := range tensors {
+		t.Shape = slices.Clone(t.Shape)
+		slices.Reverse(t.Shape)
+	}
+
+	if err := m.validateTensors(tensors); err != nil {
+		return err
+	}
+
+	kv := m.KV(baseKV)
+
+	var parameters uint64
+	for _, t := range tensors {
+		parameters += t.Elements()
+	}
+	kv["general.parameter_count"] = parameters
+
+	return ggml.WriteGGUF(f, kv, tensors)
 }

@@ -613,13 +613,23 @@ func convertMTPDraftFromSafetensors(fsys fs.FS, out *os.File, baseLayers []*laye
 		return err
 	}
 
+	baseKV := baseLayer.GGML.KV()
+
+	// Gemma 4 MTP drafts are a separate gemma4_assistant model that the runtime
+	// loads via --mtp-head and attaches to the target (cross-attending its KV).
+	// The drafter GGUF contains only the assistant's own tensors, so there is no
+	// need to read the base model's tensors.
+	if baseKV.Architecture() == "gemma4" {
+		return convert.ConvertGemma4MTPDraft(fsys, out, baseKV)
+	}
+
 	tensors, cleanup, err := baseLayerTensors(baseLayer)
 	if err != nil {
 		return err
 	}
 	defer cleanup()
 
-	return convert.ConvertQwen35MTPDraft(fsys, out, baseLayer.GGML.KV(), tensors)
+	return convert.ConvertQwen35MTPDraft(fsys, out, baseKV, tensors)
 }
 
 func baseLayerTensors(layer *layerGGML) ([]*ggml.Tensor, func(), error) {
