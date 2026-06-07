@@ -36,7 +36,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"golang.org/x/sync/semaphore"
@@ -142,12 +141,9 @@ type llamaServerRunner struct {
 	// used to map DeviceIDs to device names for VRAMByGPU lookups.
 	gpus []ml.DeviceInfo
 
-	ggml          *ggml.GGML
-	totalLayers   uint64 // maximum offloadable model layers
-	loadStart     time.Time
-	loadActivity  atomic.Int64
-	loadTracking  atomic.Bool
-	rawEmbeddings bool
+	ggml        *ggml.GGML
+	totalLayers uint64 // maximum offloadable model layers
+	loadStart   time.Time
 
 	// loadProgress caches the most recent model-load fraction in [0,1] parsed
 	// from llama-server's /health "loading model" response. It is updated on
@@ -252,21 +248,7 @@ func (s *llamaServerRunner) tokenizerAddsBOS() bool {
 		return false
 	}
 
-	kv := s.ggml.KV()
-
-	if kv.String("tokenizer.ggml.pre") == "lfm2" {
-		return true
-	}
-
-	// llama.cpp forces add_bos on for Gemma4 at load time, even for GGUFs
-	// whose tokenizer.ggml.add_bos_token metadata is explicitly false. Some
-	// GGUFs omit tokenizer.ggml.pre and are still treated as Gemma4 from
-	// tokenizer.ggml.model.
-	if kv.String("tokenizer.ggml.pre") == "gemma4" || kv.String("tokenizer.ggml.model") == "gemma4" {
-		return true
-	}
-
-	return kv.Bool("tokenizer.ggml.add_bos_token")
+	return s.ggml.KV().Bool("tokenizer.ggml.add_bos_token")
 }
 
 func (s *llamaServerRunner) completionPromptForRequest(ctx context.Context, req CompletionRequest) (any, error) {
@@ -570,32 +552,20 @@ func appendBatchArgs(params []string, opts api.Options, embedding bool, numParal
 	return params
 }
 
-// LlamaServerFlashAttention resolves the flash-attention mode passed to llama-server.
-func LlamaServerFlashAttention(gpus []ml.DeviceInfo) ml.FlashAttentionType {
+func appendFlashAttentionArgs(params []string, gpus []ml.DeviceInfo) []string {
 	enabled := envconfig.FlashAttention(false)
 	userSet := enabled == envconfig.FlashAttention(true)
 	if userSet {
 		if enabled {
-			return ml.FlashAttentionEnabled
+			return append(params, "--flash-attn", "on")
 		}
-		return ml.FlashAttentionDisabled
+		return append(params, "--flash-attn", "off")
 	}
 
 	if !ml.FlashAttentionSupported(gpus) {
-		return ml.FlashAttentionDisabled
-	}
-	return ml.FlashAttentionAuto
-}
-
-func appendFlashAttentionArgs(params []string, gpus []ml.DeviceInfo) []string {
-	switch LlamaServerFlashAttention(gpus) {
-	case ml.FlashAttentionEnabled:
-		return append(params, "--flash-attn", "on")
-	case ml.FlashAttentionDisabled:
 		return append(params, "--flash-attn", "off")
-	default:
-		return append(params, "--flash-attn", "auto")
 	}
+	return append(params, "--flash-attn", "auto")
 }
 
 func appendMainGPUArgs(params []string, opts api.Options) []string {
@@ -638,7 +608,7 @@ func shouldDisableMMProjOffload(opts api.Options, gpus []ml.DeviceInfo, modelLay
 	}
 
 	for _, gpu := range gpus {
-		if gpu.Integrated && gpu.Library != "Metal" {
+		if gpu.Integrated {
 			return true, "shared-memory-gpu"
 		}
 		memory := gpu.FreeMemory
@@ -820,7 +790,6 @@ func NewLlamaServerRunner(
 		gpus:             gpus,
 		ggml:             f,
 		totalLayers:      f.KV().BlockCount() + 1,
-		rawEmbeddings:    legacyEmbeddingsWereRaw(f.KV()),
 		sem:              semaphore.NewWeighted(int64(numParallel)),
 		launch:           launch,
 		output:           memWriter,
@@ -844,28 +813,6 @@ func cloneStringMap(src map[string]string) map[string]string {
 	return dst
 }
 
-func legacyEmbeddingsWereRaw(kv ggml.KV) bool {
-	arch := kv.Architecture()
-	if _, ok := kv[fmt.Sprintf("%s.pooling_type", arch)]; !ok {
-		return false
-	}
-
-	// Legacy /api/embeddings returned runner output, so preserve only old raw embed paths.
-	switch arch {
-	case "bert":
-		if kv.String("tokenizer.ggml.model", "bert") != "bert" {
-			return true
-		}
-		return !kv.Bool("normalize_embeddings", true)
-	case "nomic-bert", "nomic-bert-moe":
-		return !kv.Bool("normalize_embeddings", false)
-	case "gemma3", "gemma-embedding", "qwen3":
-		return false
-	default:
-		return false
-	}
-}
-
 func (s *llamaServerRunner) startProcess() error {
 	cmd, port, err := startLlamaServer(s.launch, s.output)
 	if err != nil {
@@ -877,7 +824,6 @@ func (s *llamaServerRunner) startProcess() error {
 	s.done = make(chan struct{})
 	s.doneErr = nil
 	s.loadStart = time.Now()
-	s.startLoadTracking(s.loadStart)
 
 	// Reap subprocess when it exits.
 	go func(cmd *exec.Cmd, done chan struct{}) {
@@ -1004,51 +950,6 @@ func (s *llamaServerRunner) hasParsedVRAM() bool {
 	return len(s.vramByDevice) > 0
 }
 
-func (s *llamaServerRunner) startLoadTracking(t time.Time) {
-	if s == nil {
-		return
-	}
-	s.loadTracking.Store(true)
-	s.noteLoadActivity(t)
-}
-
-func (s *llamaServerRunner) stopLoadTracking() {
-	if s == nil {
-		return
-	}
-	s.loadTracking.Store(false)
-}
-
-func (s *llamaServerRunner) noteLoadActivity(t time.Time) {
-	if s == nil || t.IsZero() {
-		return
-	}
-	if !s.loadTracking.Load() {
-		return
-	}
-
-	ns := t.UnixNano()
-	for {
-		prev := s.loadActivity.Load()
-		if ns <= prev {
-			return
-		}
-		if s.loadActivity.CompareAndSwap(prev, ns) {
-			return
-		}
-	}
-}
-
-func (s *llamaServerRunner) lastLoadActivity() time.Time {
-	if s == nil {
-		return time.Time{}
-	}
-	if ns := s.loadActivity.Load(); ns > 0 {
-		return time.Unix(0, ns)
-	}
-	return time.Time{}
-}
-
 // getServerStatus checks llama-server's /health endpoint.
 // llama-server returns {"status":"ok"}, {"status":"loading model"}, or {"status":"error"}.
 func (s *llamaServerRunner) getServerStatus(ctx context.Context) (ServerStatus, error) {
@@ -1088,9 +989,6 @@ func (s *llamaServerRunner) getServerStatus(ctx context.Context) (ServerStatus, 
 	var result struct {
 		Status   string  `json:"status"`
 		Progress float32 `json:"progress"`
-		Error    *struct {
-			Message string `json:"message"`
-		} `json:"error"`
 	}
 	if err := json.Unmarshal(body, &result); err != nil {
 		return ServerStatusError, fmt.Errorf("health unmarshal: %w", err)
@@ -1106,14 +1004,6 @@ func (s *llamaServerRunner) getServerStatus(ctx context.Context) (ServerStatus, 
 	case "no slot available":
 		return ServerStatusNoSlotsAvailable, nil
 	default:
-		if result.Error != nil {
-			switch strings.ToLower(strings.TrimSpace(result.Error.Message)) {
-			case "loading model":
-				return ServerStatusLoadingModel, nil
-			case "no slot available":
-				return ServerStatusNoSlotsAvailable, nil
-			}
-		}
 		return ServerStatusError, fmt.Errorf("llama-server error: %s", string(body))
 	}
 }
@@ -1168,18 +1058,7 @@ func (s *llamaServerRunner) Ping(ctx context.Context) error {
 }
 
 func (s *llamaServerRunner) WaitUntilRunning(ctx context.Context) error {
-	s.startLoadTracking(time.Now())
-	defer s.stopLoadTracking()
-
-	stallTimeout := envconfig.LoadTimeout()
-	lastActivity := s.lastLoadActivity()
-	if lastActivity.IsZero() {
-		lastActivity = s.loadStart
-	}
-	if lastActivity.IsZero() {
-		lastActivity = time.Now()
-	}
-	loadDeadline := lastActivity.Add(stallTimeout)
+	loadDeadline := time.Now().Add(envconfig.LoadTimeout())
 
 	slog.Info("waiting for llama-server to start responding")
 	var lastStatus ServerStatus = -1
@@ -1215,11 +1094,6 @@ func (s *llamaServerRunner) WaitUntilRunning(ctx context.Context) error {
 		default:
 		}
 
-		if activity := s.lastLoadActivity(); activity.After(lastActivity) {
-			lastActivity = activity
-			loadDeadline = lastActivity.Add(stallTimeout)
-		}
-
 		if time.Now().After(loadDeadline) {
 			msg := s.lastErrMsg()
 			return fmt.Errorf("timed out waiting for llama-server to start - %s", msg)
@@ -1237,10 +1111,6 @@ func (s *llamaServerRunner) WaitUntilRunning(ctx context.Context) error {
 		statusChanged := lastStatus != status
 		if statusChanged && status != ServerStatusReady {
 			slog.Info("waiting for llama-server to become available", "status", status)
-		}
-		if statusChanged && status == ServerStatusLoadingModel {
-			lastActivity = time.Now()
-			loadDeadline = lastActivity.Add(stallTimeout)
 		}
 
 		switch status {
@@ -1576,9 +1446,6 @@ func (s *llamaServerRunner) Completion(ctx context.Context, req CompletionReques
 			if len(line) == 0 {
 				continue
 			}
-			if bytes.HasPrefix(line, []byte(":")) {
-				continue
-			}
 
 			evt, ok := bytes.CutPrefix(line, []byte("data: "))
 			if !ok {
@@ -1880,9 +1747,6 @@ func (s *llamaServerRunner) Chat(ctx context.Context, req ChatRequest, fn func(C
 		default:
 			line := scanner.Bytes()
 			if len(line) == 0 {
-				continue
-			}
-			if bytes.HasPrefix(line, []byte(":")) {
 				continue
 			}
 
@@ -2244,11 +2108,7 @@ func (s *llamaServerRunner) Embedding(ctx context.Context, input string) ([]floa
 
 	// Use "input" field (not "content") to get the OAI-compatible response format
 	// which includes tokens_evaluated for prompt token counting
-	req := map[string]any{"input": input}
-	if s.rawEmbeddings {
-		req["embd_normalize"] = -1
-	}
-	data, err := json.Marshal(req)
+	data, err := json.Marshal(map[string]string{"input": input})
 	if err != nil {
 		return nil, 0, fmt.Errorf("error marshaling embed data: %w", err)
 	}
@@ -2650,10 +2510,6 @@ func deviceName(backendName string) string {
 
 func (w *memoryParsingWriter) Write(b []byte) (int, error) {
 	if w.runner != nil {
-		if len(b) > 0 && w.runner.loadTracking.Load() {
-			w.runner.noteLoadActivity(time.Now())
-		}
-
 		func() {
 			w.runner.memoryMu.Lock()
 			defer w.runner.memoryMu.Unlock()
