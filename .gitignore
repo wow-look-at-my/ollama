@@ -3,7 +3,7 @@
 .env
 .venv
 .swp
-dist
+/dist
 build
 .cache
 .gocache
