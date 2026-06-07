@@ -251,6 +251,7 @@ type ChatResponse struct {
 	DoneReason         DoneReason    `json:"done_reason"`
 	Done               bool          `json:"done"`
 	PromptEvalCount    int           `json:"prompt_eval_count"`
+	PromptCacheCount   int           `json:"prompt_cache_count"`
 	PromptEvalDuration time.Duration `json:"prompt_eval_duration"`
 	EvalCount          int           `json:"eval_count"`
 	EvalDuration       time.Duration `json:"eval_duration"`
@@ -294,6 +295,7 @@ type CompletionResponse struct {
 	DoneReason         DoneReason    `json:"done_reason"`
 	Done               bool          `json:"done"`
 	PromptEvalCount    int           `json:"prompt_eval_count"`
+	PromptCacheCount   int           `json:"prompt_cache_count"`
 	PromptEvalDuration time.Duration `json:"prompt_eval_duration"`
 	EvalCount          int           `json:"eval_count"`
 	EvalDuration       time.Duration `json:"eval_duration"`
