@@ -244,7 +244,7 @@ type AdapterConverter interface {
 	Replacements() []string
 }
 
-func ConvertAdapter(fsys fs.FS, f *os.File, baseKV ofs.Config) error {
+func ConvertAdapter(fsys fs.FS, f *os.File, baseKV ofs.Config, progressFn ...func(current, total int)) error {
 	bts, err := fs.ReadFile(fsys, "adapter_config.json")
 	if err != nil {
 		return err
@@ -282,7 +282,7 @@ func ConvertAdapter(fsys fs.FS, f *os.File, baseKV ofs.Config) error {
 		return err
 	}
 
-	return writeFile(f, conv.KV(baseKV), conv.Tensors(ts))
+	return writeFile(f, conv.KV(baseKV), conv.Tensors(ts), progressFn...)
 }
 
 func LoadModelMetadata(fsys fs.FS) (ModelKV, *Tokenizer, error) {
@@ -413,7 +413,7 @@ func LoadModelMetadata(fsys fs.FS) (ModelKV, *Tokenizer, error) {
 // and files it finds in the input path.
 // Supported input model formats include safetensors.
 // Supported input tokenizers files include tokenizer.json (preferred) and tokenizer.model.
-func ConvertModel(fsys fs.FS, f *os.File, projectorFiles ...*os.File) error {
+func ConvertModel(fsys fs.FS, f *os.File, progressFn func(current, total int), projectorFiles ...*os.File) error {
 	kv, t, err := LoadModelMetadata(fsys)
 	if err != nil {
 		return err
@@ -443,7 +443,7 @@ func ConvertModel(fsys fs.FS, f *os.File, projectorFiles ...*os.File) error {
 	if mc, ok := conv.(MultimodalConverter); ok && len(projectorFiles) > 0 && projectorFiles[0] != nil {
 		projectorTensors := mc.ProjectorTensors(ts)
 		if len(projectorTensors) > 0 {
-			if err := writeFile(f, mc.TextKV(t), mc.TextTensors(ts, t)); err != nil {
+			if err := writeFile(f, mc.TextKV(t), mc.TextTensors(ts, t), progressFn); err != nil {
 				return err
 			}
 			return writeFile(projectorFiles[0], mc.ProjectorKV(t), projectorTensors)
@@ -457,7 +457,7 @@ func ConvertModel(fsys fs.FS, f *os.File, projectorFiles ...*os.File) error {
 		tensors = conv.Tensors(ts)
 	}
 
-	return writeFile(f, conv.KV(t), tensors)
+	return writeFile(f, conv.KV(t), tensors, progressFn)
 }
 
 func ensureUniqueTensorNames(ts []Tensor) error {
@@ -535,7 +535,7 @@ func ConvertModelWithDraft(fsys fs.FS, draftFsys fs.FS, f *os.File) error {
 	return writeFile(f, allKV, conv.Tensors(ts))
 }
 
-func writeFile(f *os.File, kv KV, ts []*ggml.Tensor) error {
+func writeFile(f *os.File, kv KV, ts []*ggml.Tensor, progressFn ...func(current, total int)) error {
 	for k, v := range sourceTensorKV(ts) {
 		kv[k] = v
 	}
@@ -544,5 +544,5 @@ func writeFile(f *os.File, kv KV, ts []*ggml.Tensor) error {
 		ts[i].Shape = slices.Clone(ts[i].Shape)
 		slices.Reverse(ts[i].Shape)
 	}
-	return ggml.WriteGGUF(f, kv, ts)
+	return ggml.WriteGGUF(f, kv, ts, progressFn...)
 }

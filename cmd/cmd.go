@@ -382,11 +382,14 @@ func CreateHandler(cmd *cobra.Command, args []string) error {
 			spinner = progress.NewSpinner(status)
 			p.Add(status, spinner)
 		}
+
+		if resp.Digest == "" && resp.Total > 0 {
+			spinner.SetMessage(fmt.Sprintf("%s (%d/%d)", resp.Status, resp.Completed, resp.Total))
+		}
 	}
 
 	return server.CreateDirect(cmd.Context(), *req, fn)
 }
-
 
 func loadOrUnloadModel(cmd *cobra.Command, opts *runOptions) error {
 	p := progress.NewProgress(os.Stderr)
