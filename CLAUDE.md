@@ -40,34 +40,81 @@ This is a fork of ollama with Multi-Token Prediction (MTP) support for Gemma 4.
 curl http://localhost:11434/api/generate -d '{"model":"gemma4-mtp","prompt":"What is 2+2?","stream":false,"options":{"temperature":0,"num_ctx":4096}}'
 ```
 
-MTP only activates at temperature=0 (greedy decoding). Check logs for "MTP eligible" and "MTP accepted" messages.
+MTP only helps at temperature=0 (greedy). In the `llama-server` logs, confirm the
+drafter is wired up: look for the `--spec-type gemma4-mtp --mtp-head <path>` flags
+and the assistant model loading (`gemma4_assistant`). (The old Go-runner
+"MTP eligible"/"MTP accepted" log lines no longer exist — that engine was removed.)
 
-## Current MTP Status
+### Re-create the model after the converter changes
+The on-disk `gemma4-mtp` (built 2026-05-28) is the broken embedded build and cannot
+be salvaged. After this fork's converter lands and deploys, re-create it so the
+drafter becomes a separate `gemma4_assistant` GGUF:
 
-- DRAFT Modelfile directive wired through standard GGUF convert path (no MLX) ✓
-- ForwardMTP + MTPDraft run without CUDA crashes at temperature=0 ✓
-- MTP acceptance working: ~74% of cycles accept tokens, ~51 t/s on RTX A6000 ✓
-- Verified correct output matches non-MTP baseline ✓
+```
+ollama create gemma4-mtp -f /models/Modelfile --quantize q4_K_M
+```
 
-### Bugs fixed in this session
-1. **Attention scale**: Draft used 1/sqrt(hd), should be 1.0 (QK-norm like target)
-2. **Constant position**: Draft used incrementing positions, should be constant (last token pos) per HF reference
-3. **Hidden state buffer reuse**: GGML allocator reused hidden tensor memory; fixed with ggml_set_output
-4. **Hidden float extraction**: Tensor.Floats() returned nil for FromFloats-created tensors; pass []float32 directly
-5. **Input token**: Draft must use the INPUT token (position P), not the sampled OUTPUT token
-6. **Reserve=true full range**: reserve=true spanned entire cache; changed to use sequence's actual cell range
-7. **Verify batch structure**: Include sampled token in verify batch, compare at correct positions
-8. **Pipeline integration**: Use rollback-based verify + seq.inputs injection for accepted drafts
+The `/models/Modelfile` is `FROM <gemma-4 target>` + `DRAFT <gemma-4 *-assistant>`
+(both safetensors dirs). For a from-scratch build (download the HF safetensors,
+write the Modelfile, run create) use the one-command helper:
+
+```
+HF_TOKEN=hf_xxx scripts/build-gemma4-mtp.sh
+```
+
+See `docs/gemma4-mtp.md` for the full getting-started guide (prerequisites,
+manual steps, verification, and why the published macOS/MLX `gemma4:31b-coding-mtp-bf16`
+cannot be reused here).
+
+## How Gemma 4 MTP works in this fork (current architecture)
+
+GGUF models are served by the **C++ `llama-server`** subprocess (`server/sched.go`
+routes all non-MLX models to `llm.NewLlamaServer`). The pure-Go MTP runner that
+earlier sessions wrote (`runner/ollamarunner/mtp.go`) was **removed in the uprev**;
+`model/models/gemma4/*.go` remains in-tree but is **dead code for GGUF serving**.
+
+MTP therefore runs entirely through the vendored llama.cpp fork (pinned by
+`LLAMA_CPP_VERSION`, the `wow-look-at-my/llama.cpp` master). That fork adds a
+`gemma4_assistant` architecture — the port of Google's Gemma 4 drafter:
+
+- the **drafter is a separate GGUF** (`general.architecture = "gemma4_assistant"`),
+  loaded via `--mtp-head <file>` and attached to the target
+  (`llama_model_load_mtp_from_file`), not embedded in the target file;
+- it is **Q-only** (cross-attends the target's KV cache), uses the target's
+  last-layer activations via `mtp.pre_projection`/`mtp.post_projection`, and has a
+  centroid-routed LM head (`mtp.centroids`/`mtp.token_ordering`);
+- it must carry the **target's tokenizer** (the loader compares vocab text).
+
+### create path (the part this fork owns)
+`ollama create` with a gemma4 base + `DRAFT` directive produces that separate
+drafter. `server/create.go:convertMTPDraftFromSafetensors` dispatches on the base
+architecture: `gemma4` → `convert.ConvertGemma4MTPDraft` (emits a standalone
+`gemma4_assistant` GGUF as a `MediaTypeImageDraft` layer); qwen → the unchanged
+`convert.ConvertQwen35MTPDraft`. At serve time `llm/llama_server.go` detects the
+`gemma4_assistant` draft layer and emits `--spec-type gemma4-mtp --mtp-head`.
+
+> Embedding the draft into the target GGUF (the old `ConvertModelWithDraft`
+> `draft.*` shape) is WRONG for this runtime: the target loader rejects the extra
+> tensors (`done_getting_tensors: wrong number of tensors`). Keep the drafter
+> separate.
+
+### Historical note (superseded)
+Earlier sessions implemented MTP in the now-deleted Go runner (ForwardMTP /
+MTPDraft / runMTPCycle, draft `draft.*` tensors embedded in one GGUF) and recorded
+acceptance/throughput numbers against it. That engine no longer runs for GGUF;
+treat those notes and `2026-05-28-045922-previous-conversation.txt` as history, not
+the current design.
 
 ## Key Files
 
-- `model/models/gemma4/model.go` — ForwardMTP, MTPDraft, MTPVerify, HasDraft
-- `model/models/gemma4/model_draft.go` — DraftModel, Draft(), Q-only attention, KV sharing
-- `model/models/gemma4/model_text.go` — TextModel.Forward vs ForwardWithHidden
-- `runner/ollamarunner/mtp.go` — isMTPEligible, runMTPCycle
-- `runner/ollamarunner/runner.go` — forwardBatch (line ~634), computeBatch (line ~650)
-- `convert/convert.go` — ConvertModelWithDraft
-- `convert/convert_gemma4.go` — DraftKV metadata emission
+- `docs/gemma4-mtp.md` — getting-started guide (download → Modelfile → create → verify)
+- `scripts/build-gemma4-mtp.sh` — one-command build (HF download + Modelfile + `ollama create`)
+- `convert/convert_gemma4.go` — `ConvertGemma4MTPDraft` (+ `gemma4AssistantModel`): standalone `gemma4_assistant` drafter GGUF
+- `convert/convert_gemma4_assistant_test.go` — converter unit tests (synthetic fixtures)
+- `server/create.go` — `convertMTPDraftFromSafetensors` dispatch (gemma4 vs qwen)
+- `llm/llama_server.go` — `gemma4_assistant` draft detection, `--mtp-head` / `--spec-type gemma4-mtp`
+- llama.cpp fork: `src/models/gemma4-assistant.cpp`, `src/llama-arch.cpp` (arch + `mtp.*` tensors + `gemma4_assistant.*` KV)
+- `model/models/gemma4/*.go`, `convert/convert.go:ConvertModelWithDraft` — the superseded Go-engine/embedded path (dead code; do not extend)
 
 ## Hardware
 
