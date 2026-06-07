@@ -61,14 +61,6 @@ func TestEditorRunsDoNotRewriteConfig(t *testing.T) {
 				return filepath.Join(home, ".kimi", "config.toml")
 			},
 		},
-		{
-			name:   "omp",
-			binary: "omp",
-			runner: &OMP{},
-			checkPath: func(home string) string {
-				return filepath.Join(home, ".omp", "agent", "models.yml")
-			},
-		},
 	}
 
 	for _, tt := range tests {

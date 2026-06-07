@@ -1326,7 +1326,8 @@ func ggufLayersWithMediaType(digest, sourceName, mediaType string, fn func(resp 
 		mediaType = "application/vnd.ollama.image.model"
 		if f.KV().Kind() == "adapter" {
 			mediaType = "application/vnd.ollama.image.adapter"
-		} else if isProjectorGGUF(f.KV()) {
+		} else if (f.KV().Uint("block_count") == 0 && f.KV().Uint("vision.block_count") > 0) || f.KV().Kind() == "projector" {
+			// if a model has vision.block_count but not block_count, it is a standalone vision model
 			mediaType = "application/vnd.ollama.image.projector"
 		}
 	}
@@ -1340,20 +1341,6 @@ func ggufLayersWithMediaType(digest, sourceName, mediaType string, fn func(resp 
 	layers = append(layers, &layerGGML{Layer: layer, GGML: f, rewriteForCreate: true})
 
 	return layers, nil
-}
-
-func isProjectorGGUF(kv ggml.KV) bool {
-	switch kv.Kind() {
-	case "projector", "mmproj":
-		return true
-	}
-
-	// If a model has vision.block_count but not block_count, it is a standalone vision model.
-	if kv.Uint("block_count") == 0 && kv.Uint("vision.block_count") > 0 {
-		return true
-	}
-
-	return kv.Architecture() == "clip" && kv.Uint("block_count") == 0 && (kv.Bool("has_vision_encoder") || kv.Bool("has_audio_encoder"))
 }
 
 func removeLayer(layers []manifest.Layer, mediatype string) []manifest.Layer {
