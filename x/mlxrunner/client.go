@@ -223,6 +223,12 @@ func (c *Client) ContextLength() int {
 	return int(c.contextLength.Load())
 }
 
+// LoadProgress implements llm.LlamaServer. The MLX runner does not report an
+// incremental model-load fraction, so this is always 0.
+func (c *Client) LoadProgress() float32 {
+	return 0
+}
+
 // Detokenize implements llm.LlamaServer.
 func (c *Client) Detokenize(ctx context.Context, tokens []int) (string, error) {
 	return "", errors.New("not supported")
