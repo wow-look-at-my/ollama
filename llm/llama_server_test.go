@@ -216,6 +216,100 @@ func TestLlamaServerCompletionSSEParsing(t *testing.T) {
 	}
 }
 
+func TestLlamaServerCompletionForwardsPromptProgress(t *testing.T) {
+	// llama-server emits content-less prompt_progress chunks during prefill when
+	// return_progress is set, then the real tokens.
+	sseLines := []string{
+		`data: {"prompt_progress":{"total":100,"cache":10,"processed":10,"time_ms":0},"content":"","stop":false}`,
+		``,
+		`data: {"prompt_progress":{"total":100,"cache":10,"processed":60,"time_ms":40},"content":"","stop":false}`,
+		``,
+		`data: {"prompt_progress":{"total":100,"cache":10,"processed":100,"time_ms":80},"content":"","stop":false}`,
+		``,
+		`data: {"content":"Hi","stop":false}`,
+		``,
+		`data: {"content":"","stop":true,"stop_type":"eos","timings":{"prompt_n":90,"prompt_ms":80,"predicted_n":1,"predicted_ms":5}}`,
+		``,
+	}
+
+	var gotReturnProgress bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/health" {
+			fmt.Fprint(w, `{"status":"ok"}`)
+			return
+		}
+		if r.URL.Path != "/completion" {
+			t.Errorf("unexpected path: %s", r.URL.Path)
+			return
+		}
+		var reqBody llamaServerCompletionRequest
+		if err := json.NewDecoder(r.Body).Decode(&reqBody); err != nil {
+			t.Errorf("invalid request body: %v", err)
+			return
+		}
+		gotReturnProgress = reqBody.ReturnProgress
+		w.Header().Set("Content-Type", "text/event-stream")
+		for _, line := range sseLines {
+			fmt.Fprintln(w, line)
+		}
+	}))
+	defer srv.Close()
+
+	parts := strings.Split(srv.URL, ":")
+	var portInt int
+	fmt.Sscanf(parts[len(parts)-1], "%d", &portInt)
+
+	runner := &llamaServerRunner{
+		port:    portInt,
+		cmd:     fakeRunningCmd(),
+		sem:     semaphore.NewWeighted(1),
+		options: api.Options{Runner: api.Runner{NumCtx: 2048}},
+	}
+
+	var progress []api.PromptProgress
+	var tokens []string
+	var done bool
+	opts := api.DefaultOptions()
+	err := runner.Completion(t.Context(), CompletionRequest{
+		Prompt:  "test prompt",
+		Options: &opts,
+	}, func(cr CompletionResponse) {
+		switch {
+		case cr.PromptProgress != nil:
+			if cr.Content != "" {
+				t.Errorf("progress response carried content %q", cr.Content)
+			}
+			progress = append(progress, *cr.PromptProgress)
+		case cr.Done:
+			done = true
+		default:
+			tokens = append(tokens, cr.Content)
+		}
+	})
+	if err != nil {
+		t.Fatalf("Completion error: %v", err)
+	}
+
+	if !gotReturnProgress {
+		t.Error("expected return_progress=true in request to llama-server")
+	}
+	if len(progress) != 3 {
+		t.Fatalf("got %d progress updates, want 3", len(progress))
+	}
+	if progress[0].Total != 100 || progress[0].Processed != 10 || progress[0].Cache != 10 {
+		t.Errorf("progress[0] = %+v, want total=100 processed=10 cache=10", progress[0])
+	}
+	if progress[2].Processed != 100 || progress[2].TimeMS != 80 {
+		t.Errorf("progress[2] = %+v, want processed=100 time_ms=80", progress[2])
+	}
+	if len(tokens) != 1 || tokens[0] != "Hi" {
+		t.Errorf("tokens = %v, want [Hi]", tokens)
+	}
+	if !done {
+		t.Error("expected a final done response")
+	}
+}
+
 func TestLlamaServerStreamsHandleLargeSSELines(t *testing.T) {
 	tests := []struct {
 		name       string
