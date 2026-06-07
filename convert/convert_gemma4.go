@@ -593,6 +593,7 @@ type gemma4AssistantConfig struct {
 	TextConfig               struct {
 		NumHiddenLayers        uint32   `json:"num_hidden_layers"`
 		HiddenSize             uint32   `json:"hidden_size"`
+		MaxPositionEmbeddings  uint32   `json:"max_position_embeddings"`
 		NumAttentionHeads      uint32   `json:"num_attention_heads"`
 		NumKeyValueHeads       uint32   `json:"num_key_value_heads"`
 		NumGlobalKeyValueHeads *uint32  `json:"num_global_key_value_heads"`
@@ -804,6 +805,7 @@ func (m *gemma4AssistantModel) KV(baseKV ggml.KV) ggml.KV {
 	kv[p+"vocab_size"] = m.vocabSize
 	kv[p+"block_count"] = tc.NumHiddenLayers
 	kv[p+"embedding_length"] = tc.HiddenSize
+	kv[p+"context_length"] = tc.MaxPositionEmbeddings
 	if tc.IntermediateSize > 0 {
 		kv[p+"feed_forward_length"] = tc.IntermediateSize
 	}
