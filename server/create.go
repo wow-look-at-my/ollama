@@ -532,7 +532,9 @@ func convertFromSafetensors(files map[string]string, baseLayers []*layerGGML, is
 				return nil, err
 			}
 		} else {
-			if err := convert.ConvertModel(os.DirFS(tmpDir), t, projFile); err != nil {
+			if err := convert.ConvertModel(os.DirFS(tmpDir), t, func(current, total int) {
+				fn(api.ProgressResponse{Status: "converting model", Total: int64(total), Completed: int64(current)})
+			}, projFile); err != nil {
 				return nil, err
 			}
 		}
@@ -543,7 +545,9 @@ func convertFromSafetensors(files map[string]string, baseLayers []*layerGGML, is
 		}
 		fn(api.ProgressResponse{Status: "converting adapter"})
 		mediaType = "application/vnd.ollama.image.adapter"
-		if err := convert.ConvertAdapter(os.DirFS(tmpDir), t, kv); err != nil {
+		if err := convert.ConvertAdapter(os.DirFS(tmpDir), t, kv, func(current, total int) {
+			fn(api.ProgressResponse{Status: "converting adapter", Total: int64(total), Completed: int64(current)})
+		}); err != nil {
 			return nil, err
 		}
 	}
