@@ -88,9 +88,15 @@ FROM cpu-deps AS llama-server-cpu
 COPY LLAMA_CPP_VERSION .
 COPY llama/server llama/server
 COPY llama/compat llama/compat
+# Fork customization: build only the targets we install. The cpu build preset
+# declares targets [llama-server, llama-quantize]; a bare `cmake --build <dir>`
+# builds the default `all` target instead, compiling ~18 extra tool binaries
+# (llama-cli, llama-bench, llama-tts, the *-cli mtmd tools, ...) that are then
+# discarded by `--install --component llama-server`. Drop `-l $(nproc)` too and
+# let ninja manage its own concurrency (its default is already cores+2).
 RUN --mount=type=cache,target=/root/.ccache \
     cmake -S llama/server --preset cpu \
-        && cmake --build build/llama-server-cpu -- -l $(nproc) \
+        && cmake --build build/llama-server-cpu --target llama-server llama-quantize \
         && cmake --install build/llama-server-cpu --component llama-server --strip \
         && for lib in \
             /usr/lib64/libgomp.so* \
@@ -123,9 +129,16 @@ COPY llama/compat llama/compat
 # *-virtual (PTX) archs; "86" alone would still embed PTX as a JIT fallback. "86-real" drops
 # the PTX entirely — only the real cubin that runs on this card. Override via --build-arg.
 ARG CUDA_ARCHITECTURES=86-real
+# This stage installs ONLY libggml-cuda.so (+ bundled cublas/cudart, see the
+# `install(TARGETS ggml-cuda ...)` rule). Building the default `all` target
+# additionally compiled the entire host-side llama.cpp library, common, mtmd,
+# the llama-server binary and ~18 tool binaries — ~260s on the critical path —
+# all thrown away by `--install --component llama-server`. Build just the
+# backend (this is what the build preset's targets already declare), and let
+# ninja manage its own concurrency.
 RUN --mount=type=cache,target=/root/.ccache \
     cmake -S llama/server --preset llama_cuda_v13_linux -DCMAKE_CUDA_ARCHITECTURES=${CUDA_ARCHITECTURES} \
-        && cmake --build build/llama-server-cuda_v13 -- -l $(nproc) \
+        && cmake --build build/llama-server-cuda_v13 --target ggml-cuda \
         && cmake --install build/llama-server-cuda_v13 --component llama-server --strip
 
 FROM scratch AS publish-llama-server-cuda_v13
