@@ -1357,10 +1357,16 @@ type llamaServerMultimodalPrompt struct {
 
 // llamaServerCompletionResponse is the response format from llama-server's /completion endpoint.
 type llamaServerCompletionResponse struct {
-	Content                 string                 `json:"content"`
-	Stop                    bool                   `json:"stop"`
-	StopType                string                 `json:"stop_type"`
-	Timings                 llamaServerTimings     `json:"timings"`
+	Content  string `json:"content"`
+	Stop     bool   `json:"stop"`
+	StopType string `json:"stop_type"`
+	Timings  struct {
+		PromptN   int     `json:"prompt_n"`
+		CacheN    int     `json:"cache_n"`
+		PromptMS  float64 `json:"prompt_ms"`
+		PredictN  int     `json:"predicted_n"`
+		PredictMS float64 `json:"predicted_ms"`
+	} `json:"timings"`
 	CompletionProbabilities []llamaServerTokenProb `json:"completion_probabilities"`
 	// PromptProgress is present on content-less chunks emitted during prefill when
 	// return_progress is set (Processed/Total is the overall fraction done).
@@ -1397,20 +1403,14 @@ type llamaServerChatChoice struct {
 
 type llamaServerChatResponse struct {
 	Choices []llamaServerChatChoice `json:"choices"`
-	Timings llamaServerTimings      `json:"timings"`
-	Error   any                     `json:"error"`
-}
-
-type llamaServerTimings struct {
-	CacheN    int     `json:"cache_n"`
-	PromptN   int     `json:"prompt_n"`
-	PromptMS  float64 `json:"prompt_ms"`
-	PredictN  int     `json:"predicted_n"`
-	PredictMS float64 `json:"predicted_ms"`
-}
-
-func (t llamaServerTimings) promptEvalCount() int {
-	return t.CacheN + t.PromptN
+	Timings struct {
+		PromptN   int     `json:"prompt_n"`
+		CacheN    int     `json:"cache_n"`
+		PromptMS  float64 `json:"prompt_ms"`
+		PredictN  int     `json:"predicted_n"`
+		PredictMS float64 `json:"predicted_ms"`
+	} `json:"timings"`
+	Error any `json:"error"`
 }
 
 type llamaServerApplyTemplateResponse struct {
@@ -1636,7 +1636,8 @@ func (s *llamaServerRunner) Completion(ctx context.Context, req CompletionReques
 					Content:            lsResp.Content,
 					Done:               true,
 					DoneReason:         doneReason,
-					PromptEvalCount:    lsResp.Timings.promptEvalCount(),
+					PromptEvalCount:    lsResp.Timings.PromptN,
+					PromptCacheCount:   lsResp.Timings.CacheN,
 					PromptEvalDuration: time.Duration(lsResp.Timings.PromptMS * float64(time.Millisecond)),
 					EvalCount:          lsResp.Timings.PredictN,
 					EvalDuration:       time.Duration(lsResp.Timings.PredictMS * float64(time.Millisecond)),
@@ -1935,7 +1936,8 @@ func (s *llamaServerRunner) Chat(ctx context.Context, req ChatRequest, fn func(C
 
 				resp.Done = true
 				resp.DoneReason = doneReason
-				resp.PromptEvalCount = lsResp.Timings.promptEvalCount()
+				resp.PromptEvalCount = lsResp.Timings.PromptN
+				resp.PromptCacheCount = lsResp.Timings.CacheN
 				resp.PromptEvalDuration = time.Duration(lsResp.Timings.PromptMS * float64(time.Millisecond))
 				resp.EvalCount = lsResp.Timings.PredictN
 				resp.EvalDuration = time.Duration(lsResp.Timings.PredictMS * float64(time.Millisecond))

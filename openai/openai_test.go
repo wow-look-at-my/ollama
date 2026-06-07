@@ -194,6 +194,46 @@ func TestToUsage(t *testing.T) {
 	if usage.TotalTokens != 30 {
 		t.Errorf("expected TotalTokens 30, got %d", usage.TotalTokens)
 	}
+
+	// Without a cached prefix, no prompt_tokens_details is emitted.
+	if usage.PromptTokensDetails != nil {
+		t.Errorf("expected no PromptTokensDetails, got %+v", usage.PromptTokensDetails)
+	}
+}
+
+func TestToUsageWithCachedPrompt(t *testing.T) {
+	// PromptEvalCount is only the tokens actually evaluated; PromptCacheCount is
+	// the cached prefix reused from the KV cache. The OpenAI prompt_tokens must
+	// be the full prompt (evaluated + cached), with cached_tokens as the subset.
+	resp := api.ChatResponse{
+		Metrics: api.Metrics{
+			PromptEvalCount:  10,
+			PromptCacheCount: 90,
+			EvalCount:        20,
+		},
+	}
+
+	usage := ToUsage(resp)
+
+	if usage.PromptTokens != 100 {
+		t.Errorf("expected PromptTokens 100 (10 evaluated + 90 cached), got %d", usage.PromptTokens)
+	}
+
+	if usage.CompletionTokens != 20 {
+		t.Errorf("expected CompletionTokens 20, got %d", usage.CompletionTokens)
+	}
+
+	if usage.TotalTokens != 120 {
+		t.Errorf("expected TotalTokens 120, got %d", usage.TotalTokens)
+	}
+
+	if usage.PromptTokensDetails == nil {
+		t.Fatal("expected PromptTokensDetails to be present")
+	}
+
+	if usage.PromptTokensDetails.CachedTokens != 90 {
+		t.Errorf("expected CachedTokens 90, got %d", usage.PromptTokensDetails.CachedTokens)
+	}
 }
 
 func TestNewError(t *testing.T) {

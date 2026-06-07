@@ -66,9 +66,17 @@ type CompleteChunkChoice struct {
 }
 
 type Usage struct {
-	PromptTokens     int `json:"prompt_tokens"`
-	CompletionTokens int `json:"completion_tokens"`
-	TotalTokens      int `json:"total_tokens"`
+	PromptTokens        int                  `json:"prompt_tokens"`
+	CompletionTokens    int                  `json:"completion_tokens"`
+	TotalTokens         int                  `json:"total_tokens"`
+	PromptTokensDetails *PromptTokensDetails `json:"prompt_tokens_details,omitempty"`
+}
+
+// PromptTokensDetails breaks down the prompt token count. cached_tokens is the
+// subset of prompt_tokens that was served from a cached prefix (KV cache reuse)
+// rather than freshly evaluated, matching the OpenAI usage schema.
+type PromptTokensDetails struct {
+	CachedTokens int `json:"cached_tokens"`
 }
 
 type ResponseFormat struct {
@@ -243,11 +251,24 @@ func NewError(code int, message string) ErrorResponse {
 
 // ToUsage converts an api.ChatResponse to Usage
 func ToUsage(r api.ChatResponse) Usage {
-	return Usage{
-		PromptTokens:     r.Metrics.PromptEvalCount,
-		CompletionTokens: r.Metrics.EvalCount,
-		TotalTokens:      r.Metrics.PromptEvalCount + r.Metrics.EvalCount,
+	return usageFromMetrics(r.Metrics)
+}
+
+// usageFromMetrics builds an OpenAI Usage from ollama metrics. prompt_tokens is
+// the full prompt length, so it includes any tokens reused from a cached prefix
+// (PromptEvalCount counts only the tokens actually evaluated). cached_tokens
+// reports that reused subset, matching the OpenAI usage schema.
+func usageFromMetrics(m api.Metrics) Usage {
+	promptTokens := m.PromptEvalCount + m.PromptCacheCount
+	usage := Usage{
+		PromptTokens:     promptTokens,
+		CompletionTokens: m.EvalCount,
+		TotalTokens:      promptTokens + m.EvalCount,
 	}
+	if m.PromptCacheCount > 0 {
+		usage.PromptTokensDetails = &PromptTokensDetails{CachedTokens: m.PromptCacheCount}
+	}
+	return usage
 }
 
 // ToToolCalls converts api.ToolCall to OpenAI ToolCall format
@@ -389,11 +410,7 @@ func ToChunk(id string, r api.ChatResponse, toolCallSent bool) ChatCompletionChu
 
 // ToUsageGenerate converts an api.GenerateResponse to Usage
 func ToUsageGenerate(r api.GenerateResponse) Usage {
-	return Usage{
-		PromptTokens:     r.Metrics.PromptEvalCount,
-		CompletionTokens: r.Metrics.EvalCount,
-		TotalTokens:      r.Metrics.PromptEvalCount + r.Metrics.EvalCount,
-	}
+	return usageFromMetrics(r.Metrics)
 }
 
 // ToCompletion converts an api.GenerateResponse to Completion

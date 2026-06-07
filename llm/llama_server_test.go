@@ -318,7 +318,7 @@ func TestLlamaServerCompletionForwardsPromptProgress(t *testing.T) {
 	}
 }
 
-func TestLlamaServerCompletionPromptEvalCountIncludesCache(t *testing.T) {
+func TestLlamaServerCompletionReportsPromptAndCacheCounts(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/health":
@@ -357,15 +357,18 @@ func TestLlamaServerCompletionPromptEvalCountIncludesCache(t *testing.T) {
 	if len(responses) != 1 {
 		t.Fatalf("got %d responses, want 1", len(responses))
 	}
-	if responses[0].PromptEvalCount != 17 {
-		t.Errorf("PromptEvalCount = %d, want 17", responses[0].PromptEvalCount)
+	if responses[0].PromptEvalCount != 5 {
+		t.Errorf("PromptEvalCount = %d, want 5", responses[0].PromptEvalCount)
+	}
+	if responses[0].PromptCacheCount != 12 {
+		t.Errorf("PromptCacheCount = %d, want 12", responses[0].PromptCacheCount)
 	}
 	if responses[0].PromptEvalDuration != 10*time.Millisecond {
 		t.Errorf("PromptEvalDuration = %s, want 10ms", responses[0].PromptEvalDuration)
 	}
 }
 
-func TestLlamaServerChatPromptEvalCountIncludesCache(t *testing.T) {
+func TestLlamaServerChatReportsPromptAndCacheCounts(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/health":
@@ -407,8 +410,11 @@ func TestLlamaServerChatPromptEvalCountIncludesCache(t *testing.T) {
 	if len(responses) != 2 {
 		t.Fatalf("got %d responses, want 2", len(responses))
 	}
-	if responses[1].PromptEvalCount != 17 {
-		t.Errorf("PromptEvalCount = %d, want 17", responses[1].PromptEvalCount)
+	if responses[1].PromptEvalCount != 5 {
+		t.Errorf("PromptEvalCount = %d, want 5", responses[1].PromptEvalCount)
+	}
+	if responses[1].PromptCacheCount != 12 {
+		t.Errorf("PromptCacheCount = %d, want 12", responses[1].PromptCacheCount)
 	}
 	if responses[1].PromptEvalDuration != 10*time.Millisecond {
 		t.Errorf("PromptEvalDuration = %s, want 10ms", responses[1].PromptEvalDuration)

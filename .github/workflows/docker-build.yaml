@@ -83,8 +83,28 @@ jobs:
 
       - name: Download Qwen2.5-0.5B
         if: steps.cache-model.outputs.cache-hit != 'true'
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
-          git clone --depth=1 https://huggingface.co/Qwen/Qwen2.5-0.5B /tmp/hf-model
+          # Authenticate to HuggingFace when a token is available: anonymous
+          # clones are aggressively rate-limited and intermittently return 429.
+          # The header is scoped to huggingface.co so it is never forwarded to
+          # the LFS CDN on redirect. Retry with backoff to ride out transient
+          # errors; fall back to an anonymous clone if no token is configured.
+          auth=()
+          if [ -n "${HF_TOKEN:-}" ]; then
+            auth=(-c "http.https://huggingface.co/.extraheader=Authorization: Bearer ${HF_TOKEN}")
+          fi
+          for attempt in 1 2 3 4 5; do
+            if git clone --depth=1 "${auth[@]}" https://huggingface.co/Qwen/Qwen2.5-0.5B /tmp/hf-model; then
+              exit 0
+            fi
+            echo "clone attempt ${attempt} failed; retrying in $((attempt * 10))s" >&2
+            rm -rf /tmp/hf-model
+            sleep $((attempt * 10))
+          done
+          echo "failed to clone Qwen2.5-0.5B after 5 attempts" >&2
+          exit 1
 
       # ── Ollama server (runs in the same container as the steps) ─────────────
       - name: Start ollama server
