@@ -22,6 +22,7 @@ type fakeTensor struct {
 	data  []float32
 
 	sourceDType string
+	kind        uint32
 	repacker    Repacker
 }
 
@@ -29,11 +30,18 @@ func (f fakeTensor) Name() string {
 	return f.name
 }
 
+func (f *fakeTensor) SetName(name string) {
+	f.name = name
+}
+
 func (f fakeTensor) Shape() []uint64 {
 	return f.shape
 }
 
 func (f fakeTensor) Kind() uint32 {
+	if f.kind != 0 {
+		return f.kind
+	}
 	return 0
 }
 
@@ -51,6 +59,7 @@ func (f fakeTensor) Clone() Tensor {
 		shape:       slices.Clone(f.shape),
 		data:        slices.Clone(f.data),
 		sourceDType: f.sourceDType,
+		kind:        f.kind,
 		repacker:    f.repacker,
 	}
 }

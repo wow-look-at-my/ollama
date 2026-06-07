@@ -488,6 +488,10 @@ func TestAutoUpdateReenabledDownloadsUpdate(t *testing.T) {
 	}
 
 	upd.StartBackgroundUpdaterChecker(ctx, cb)
+	// Drain the background checker before t.TempDir's RemoveAll runs: cancelling the context
+	// only signals the goroutine; without waiting, an in-flight download can still be writing
+	// to UpdateStageDir during cleanup ("directory not empty").
+	t.Cleanup(upd.Wait)
 
 	// Wait for a few cycles with auto-update disabled - no download should happen
 	time.Sleep(50 * time.Millisecond)

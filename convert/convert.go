@@ -147,7 +147,9 @@ func (ModelParameters) KV(t *Tokenizer) KV {
 	}
 
 	for _, sv := range t.SpecialVocabulary {
-		kv[fmt.Sprintf("tokenizer.ggml.add_%s_token", sv.Key())] = sv.AddToken
+		if sv.AddTokenSet {
+			kv[fmt.Sprintf("tokenizer.ggml.add_%s_token", sv.Key())] = sv.AddToken
+		}
 		kv[fmt.Sprintf("tokenizer.ggml.%s_token_id", sv.Key())] = uint32(sv.ID)
 		if len(sv.IDs) > 0 {
 			kv[fmt.Sprintf("tokenizer.ggml.%s_token_ids", sv.Key())] = sv.IDs
@@ -200,8 +202,36 @@ type ModelConverter interface {
 	specialTokenTypes() []string
 }
 
+// DraftKVEmitter is an optional interface for model converters that support
+// emitting KV metadata for a bundled draft/assistant model.
+type DraftKVEmitter interface {
+	DraftKV(draftFsys fs.FS) (KV, error)
+}
+
+// MultimodalConverter splits checkpoints with embedded vision/projector
+// weights into a text model GGUF and a separate projector GGUF.
+type MultimodalConverter interface {
+	ModelConverter
+	TextKV(*Tokenizer) KV
+	TextTensors([]Tensor, *Tokenizer) []*ggml.Tensor
+	ProjectorKV(*Tokenizer) KV
+	ProjectorTensors([]Tensor) []*ggml.Tensor
+}
+
 type moreParser interface {
 	parseMore(fs.FS) error
+}
+
+type extraTensorParser interface {
+	extraTensors(fs.FS) ([]Tensor, error)
+}
+
+type tokenizerAdjuster interface {
+	adjustTokenizer(*Tokenizer)
+}
+
+type tokenizerAwareTensorConverter interface {
+	TensorsWithTokenizer([]Tensor, *Tokenizer) []*ggml.Tensor
 }
 
 type AdapterConverter interface {
@@ -240,7 +270,10 @@ func ConvertAdapter(fsys fs.FS, f *os.File, baseKV ofs.Config, progressFn ...fun
 		return errors.New("unsupported architecture")
 	}
 
-	ts, err := parseTensors(fsys, strings.NewReplacer(conv.Replacements()...))
+	ts, cleanup, err := parseTensors(fsys, strings.NewReplacer(conv.Replacements()...))
+	if cleanup != nil {
+		defer cleanup()
+	}
 	if err != nil {
 		return err
 	}
@@ -288,6 +321,8 @@ func LoadModelMetadata(fsys fs.FS) (ModelKV, *Tokenizer, error) {
 		conv = &gemma2Model{}
 	case "Gemma3ForCausalLM", "Gemma3ForConditionalGeneration":
 		conv = &gemma3Model{Architecture: p.Architectures[0]}
+	case "Gemma3TextModel":
+		conv = &embeddingGemmaModel{}
 	case "Gemma3nForConditionalGeneration":
 		conv = &gemma3nModel{}
 	case "Gemma4ForCausalLM", "Gemma4ForConditionalGeneration", "Gemma4AssistantForCausalLM":
@@ -348,6 +383,9 @@ func LoadModelMetadata(fsys fs.FS) (ModelKV, *Tokenizer, error) {
 	if err != nil {
 		return nil, nil, err
 	}
+	if ta, ok := conv.(tokenizerAdjuster); ok {
+		ta.adjustTokenizer(t)
+	}
 
 	vocabSize := int(cmp.Or(p.VocabSize, p.TextModel.VocabSize))
 
@@ -375,19 +413,126 @@ func LoadModelMetadata(fsys fs.FS) (ModelKV, *Tokenizer, error) {
 // and files it finds in the input path.
 // Supported input model formats include safetensors.
 // Supported input tokenizers files include tokenizer.json (preferred) and tokenizer.model.
-func ConvertModel(fsys fs.FS, f *os.File, progressFn ...func(current, total int)) error {
+func ConvertModel(fsys fs.FS, f *os.File, progressFn func(current, total int), projectorFiles ...*os.File) error {
 	kv, t, err := LoadModelMetadata(fsys)
 	if err != nil {
 		return err
 	}
 	conv := kv.(ModelConverter)
 
-	ts, err := parseTensors(fsys, strings.NewReplacer(conv.Replacements()...))
+	ts, cleanup, err := parseTensors(fsys, strings.NewReplacer(conv.Replacements()...))
+	if cleanup != nil {
+		defer cleanup()
+	}
 	if err != nil {
 		return err
 	}
 
-	return writeFile(f, conv.KV(t), conv.Tensors(ts), progressFn...)
+	if tp, ok := conv.(extraTensorParser); ok {
+		extra, err := tp.extraTensors(fsys)
+		if err != nil {
+			return err
+		}
+		ts = append(ts, extra...)
+	}
+
+	if err := ensureUniqueTensorNames(ts); err != nil {
+		return err
+	}
+
+	if mc, ok := conv.(MultimodalConverter); ok && len(projectorFiles) > 0 && projectorFiles[0] != nil {
+		projectorTensors := mc.ProjectorTensors(ts)
+		if len(projectorTensors) > 0 {
+			if err := writeFile(f, mc.TextKV(t), mc.TextTensors(ts, t), progressFn); err != nil {
+				return err
+			}
+			return writeFile(projectorFiles[0], mc.ProjectorKV(t), projectorTensors)
+		}
+	}
+
+	var tensors []*ggml.Tensor
+	if tc, ok := conv.(tokenizerAwareTensorConverter); ok {
+		tensors = tc.TensorsWithTokenizer(ts, t)
+	} else {
+		tensors = conv.Tensors(ts)
+	}
+
+	return writeFile(f, conv.KV(t), tensors, progressFn)
+}
+
+func ensureUniqueTensorNames(ts []Tensor) error {
+	names := make(map[string]struct{}, len(ts))
+	for _, t := range ts {
+		if _, ok := names[t.Name()]; ok {
+			return fmt.Errorf("duplicate tensor name '%s' was found for this model", t.Name())
+		}
+		names[t.Name()] = struct{}{}
+	}
+	return nil
+}
+
+// ConvertModelWithDraft converts a model like ConvertModel, but also reads
+// draft/assistant tensors from draftFsys. Draft tensor names are prefixed
+// with "draft." before replacement rules are applied, and draft KV metadata
+// is emitted if the converter implements DraftKVEmitter.
+func ConvertModelWithDraft(fsys fs.FS, draftFsys fs.FS, f *os.File) error {
+	kv, t, err := LoadModelMetadata(fsys)
+	if err != nil {
+		return err
+	}
+	conv := kv.(ModelConverter)
+
+	replacer := strings.NewReplacer(conv.Replacements()...)
+	ts, cleanup, err := parseTensors(fsys, replacer)
+	if cleanup != nil {
+		defer cleanup()
+	}
+	if err != nil {
+		return err
+	}
+
+	draftMatches, err := fs.Glob(draftFsys, "*.safetensors")
+	if err != nil {
+		return fmt.Errorf("draft: %w", err)
+	}
+	if len(draftMatches) == 0 {
+		return errors.New("draft directory contains no .safetensors files")
+	}
+
+	// Parse draft tensors with an identity replacer, then prefix names with
+	// "draft." and run the model's replacer. This converts e.g.
+	// "model.language_model.layers.0.self_attn.q_proj.weight"
+	// → (prefix) "draft.model.language_model.layers.0.self_attn.q_proj.weight"
+	// → (replace) "draft.blk.0.attn_q.weight"
+	identityReplacer := strings.NewReplacer()
+	draftTs, draftCleanup, err := parseSafetensors(draftFsys, identityReplacer, draftMatches...)
+	if draftCleanup != nil {
+		defer draftCleanup()
+	}
+	if err != nil {
+		return fmt.Errorf("draft: %w", err)
+	}
+
+	for i := range draftTs {
+		prefixed := "draft." + draftTs[i].Name()
+		renamed := replacer.Replace(prefixed)
+		draftTs[i].SetName(renamed)
+	}
+
+	ts = append(ts, draftTs...)
+
+	allKV := conv.KV(t)
+	if emitter, ok := conv.(DraftKVEmitter); ok {
+		draftKV, err := emitter.DraftKV(draftFsys)
+		if err != nil {
+			return fmt.Errorf("draft KV: %w", err)
+		}
+		for k, v := range draftKV {
+			allKV[k] = v
+		}
+	}
+
+	return writeFile(f, allKV, conv.Tensors(ts))
 }
 
 func writeFile(f *os.File, kv KV, ts []*ggml.Tensor, progressFn ...func(current, total int)) error {

@@ -559,7 +559,24 @@ type ChatResponse struct {
 	// if requested via the Logprobs parameter.
 	Logprobs []Logprob `json:"logprobs,omitempty"`
 
+	// PromptProgress, when set, is a prompt-processing (prefill) progress update
+	// for a streaming request. It is emitted before the first generated token
+	// while a long prompt is being ingested and carries no message content.
+	PromptProgress *PromptProgress `json:"prompt_progress,omitempty"`
+
 	Metrics
+}
+
+// PromptProgress reports prompt-processing (prefill) progress for a streaming
+// request, surfaced from the runner's return_progress stream. Total is the
+// prompt length in tokens, Cache the count reused from the prompt cache,
+// Processed the number evaluated so far (Processed/Total is the overall
+// fraction done), and TimeMS the elapsed prefill time in milliseconds.
+type PromptProgress struct {
+	Total     int   `json:"total"`
+	Cache     int   `json:"cache"`
+	Processed int   `json:"processed"`
+	TimeMS    int64 `json:"time_ms"`
 }
 
 // DebugInfo contains debug information for template rendering
@@ -573,8 +590,13 @@ type Metrics struct {
 	LoadDuration       time.Duration `json:"load_duration,omitempty"`
 	PromptEvalCount    int           `json:"prompt_eval_count,omitempty"`
 	PromptEvalDuration time.Duration `json:"prompt_eval_duration,omitempty"`
-	EvalCount          int           `json:"eval_count,omitempty"`
-	EvalDuration       time.Duration `json:"eval_duration,omitempty"`
+	// PromptCacheCount is the number of prompt tokens that were reused from the
+	// KV cache (a cached prefix) instead of being evaluated. PromptEvalCount
+	// counts only the tokens actually processed, so the full prompt length is
+	// PromptEvalCount + PromptCacheCount.
+	PromptCacheCount int           `json:"prompt_cache_count,omitempty"`
+	EvalCount        int           `json:"eval_count,omitempty"`
+	EvalDuration     time.Duration `json:"eval_duration,omitempty"`
 }
 
 // Options specified in [GenerateRequest].  If you add a new option here, also
@@ -600,12 +622,13 @@ type Options struct {
 
 // Runner options which must be set when the model is loaded into memory
 type Runner struct {
-	NumCtx    int   `json:"num_ctx,omitempty"`
-	NumBatch  int   `json:"num_batch,omitempty"`
-	NumGPU    int   `json:"num_gpu,omitempty"`
-	MainGPU   int   `json:"main_gpu,omitempty"`
-	UseMMap   *bool `json:"use_mmap,omitempty"`
-	NumThread int   `json:"num_thread,omitempty"`
+	NumCtx          int   `json:"num_ctx,omitempty"`
+	NumBatch        int   `json:"num_batch,omitempty"`
+	NumGPU          int   `json:"num_gpu,omitempty"`
+	MainGPU         *int  `json:"main_gpu,omitempty"`
+	UseMMap         *bool `json:"use_mmap,omitempty"`
+	NumThread       int   `json:"num_thread,omitempty"`
+	DraftNumPredict int   `json:"draft_num_predict,omitempty"`
 }
 
 // TokenizeRequest is the request passed to [Client.Tokenize].
@@ -729,6 +752,9 @@ type CreateRequest struct {
 	// Quantize is the quantization format for the model; leave blank to not change the quantization level.
 	Quantize string `json:"quantize,omitempty"`
 
+	// DraftQuantize is the quantization format for the draft model.
+	DraftQuantize string `json:"draft_quantize,omitempty"`
+
 	// From is the name of the model or file to use as the source.
 	From string `json:"from,omitempty"`
 
@@ -737,6 +763,9 @@ type CreateRequest struct {
 
 	// Files is a map of files include when creating the model.
 	Files map[string]string `json:"files,omitempty"`
+
+	// DraftFiles is a map of draft model files to include when creating the model.
+	DraftFiles map[string]string `json:"draft_files,omitempty"`
 
 	// Adapters is a map of LoRA adapters to include when creating the model.
 	Adapters map[string]string `json:"adapters,omitempty"`
@@ -881,14 +910,15 @@ type ProcessResponse struct {
 
 // ListModelResponse is a single model description in [ListResponse].
 type ListModelResponse struct {
-	Name        string       `json:"name"`
-	Model       string       `json:"model"`
-	RemoteModel string       `json:"remote_model,omitempty"`
-	RemoteHost  string       `json:"remote_host,omitempty"`
-	ModifiedAt  time.Time    `json:"modified_at"`
-	Size        int64        `json:"size"`
-	Digest      string       `json:"digest"`
-	Details     ModelDetails `json:"details,omitempty"`
+	Name         string             `json:"name"`
+	Model        string             `json:"model"`
+	RemoteModel  string             `json:"remote_model,omitempty"`
+	RemoteHost   string             `json:"remote_host,omitempty"`
+	ModifiedAt   time.Time          `json:"modified_at"`
+	Size         int64              `json:"size"`
+	Digest       string             `json:"digest"`
+	Details      ModelDetails       `json:"details,omitempty"`
+	Capabilities []model.Capability `json:"capabilities,omitempty"`
 }
 
 // ProcessModelResponse is a single model description in [ProcessResponse].
@@ -901,6 +931,13 @@ type ProcessModelResponse struct {
 	ExpiresAt     time.Time    `json:"expires_at"`
 	SizeVRAM      int64        `json:"size_vram"`
 	ContextLength int          `json:"context_length"`
+	// Loading is true while the model is still loading into memory rather than
+	// resident. It is only ever set on entries returned by GET /api/ps?include=loading;
+	// the default GET /api/ps lists resident models only, so it stays false there.
+	Loading bool `json:"loading,omitempty"`
+	// Progress is the model-load fraction in [0,1] while Loading is true (omitted
+	// once resident). Sourced from llama-server's /health "progress" field.
+	Progress float32 `json:"progress,omitempty"`
 }
 
 type TokenResponse struct {
@@ -981,6 +1018,8 @@ type ModelDetails struct {
 	Families          []string `json:"families"`
 	ParameterSize     string   `json:"parameter_size"`
 	QuantizationLevel string   `json:"quantization_level"`
+	ContextLength     int      `json:"context_length,omitempty"`
+	EmbeddingLength   int      `json:"embedding_length,omitempty"`
 }
 
 // UserResponse provides information about a user.
@@ -1103,14 +1142,25 @@ func (opts *Options) FromMap(m map[string]any) error {
 				}
 				field.Set(reflect.ValueOf(slice))
 			case reflect.Pointer:
-				var b bool
-				if field.Type() == reflect.TypeOf(&b) {
+				switch field.Type().Elem().Kind() {
+				case reflect.Bool:
 					val, ok := val.(bool)
 					if !ok {
 						return fmt.Errorf("option %q must be of type boolean", key)
 					}
 					field.Set(reflect.ValueOf(&val))
-				} else {
+				case reflect.Int:
+					var i int
+					switch t := val.(type) {
+					case int64:
+						i = int(t)
+					case float64:
+						i = int(t)
+					default:
+						return fmt.Errorf("option %q must be of type integer", key)
+					}
+					field.Set(reflect.ValueOf(&i))
+				default:
 					return fmt.Errorf("unknown type loading config params: %v %v", field.Kind(), field.Type())
 				}
 			default:
@@ -1143,11 +1193,12 @@ func DefaultOptions() Options {
 
 		Runner: Runner{
 			// options set when the model is loaded
-			NumCtx:    int(envconfig.ContextLength()),
-			NumBatch:  512,
-			NumGPU:    -1, // -1 here indicates that NumGPU should be set dynamically
-			NumThread: 0,  // let the runtime decide
-			UseMMap:   nil,
+			NumCtx:          int(envconfig.ContextLength()),
+			NumBatch:        512,
+			NumGPU:          -1, // -1 here indicates that NumGPU should be set dynamically
+			NumThread:       0,  // let the runtime decide
+			DraftNumPredict: 4,
+			UseMMap:         nil,
 		},
 	}
 }
@@ -1351,14 +1402,20 @@ func FormatParams(params map[string][]string) (map[string]any, error) {
 					// TODO: only string slices are supported right now
 					out[key] = vals
 				case reflect.Pointer:
-					var b bool
-					if field.Type() == reflect.TypeOf(&b) {
+					switch field.Type().Elem().Kind() {
+					case reflect.Bool:
 						boolVal, err := strconv.ParseBool(vals[0])
 						if err != nil {
 							return nil, fmt.Errorf("invalid bool value %s", vals)
 						}
 						out[key] = &boolVal
-					} else {
+					case reflect.Int:
+						intVal, err := strconv.ParseInt(vals[0], 10, 64)
+						if err != nil {
+							return nil, fmt.Errorf("invalid int value %s", vals)
+						}
+						out[key] = intVal
+					default:
 						return nil, fmt.Errorf("unknown type %s for %s", field.Kind(), key)
 					}
 				default:

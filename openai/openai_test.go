@@ -194,6 +194,46 @@ func TestToUsage(t *testing.T) {
 	if usage.TotalTokens != 30 {
 		t.Errorf("expected TotalTokens 30, got %d", usage.TotalTokens)
 	}
+
+	// Without a cached prefix, no prompt_tokens_details is emitted.
+	if usage.PromptTokensDetails != nil {
+		t.Errorf("expected no PromptTokensDetails, got %+v", usage.PromptTokensDetails)
+	}
+}
+
+func TestToUsageWithCachedPrompt(t *testing.T) {
+	// PromptEvalCount is only the tokens actually evaluated; PromptCacheCount is
+	// the cached prefix reused from the KV cache. The OpenAI prompt_tokens must
+	// be the full prompt (evaluated + cached), with cached_tokens as the subset.
+	resp := api.ChatResponse{
+		Metrics: api.Metrics{
+			PromptEvalCount:  10,
+			PromptCacheCount: 90,
+			EvalCount:        20,
+		},
+	}
+
+	usage := ToUsage(resp)
+
+	if usage.PromptTokens != 100 {
+		t.Errorf("expected PromptTokens 100 (10 evaluated + 90 cached), got %d", usage.PromptTokens)
+	}
+
+	if usage.CompletionTokens != 20 {
+		t.Errorf("expected CompletionTokens 20, got %d", usage.CompletionTokens)
+	}
+
+	if usage.TotalTokens != 120 {
+		t.Errorf("expected TotalTokens 120, got %d", usage.TotalTokens)
+	}
+
+	if usage.PromptTokensDetails == nil {
+		t.Fatal("expected PromptTokensDetails to be present")
+	}
+
+	if usage.PromptTokensDetails.CachedTokens != 90 {
+		t.Errorf("expected CachedTokens 90, got %d", usage.PromptTokensDetails.CachedTokens)
+	}
 }
 
 func TestNewError(t *testing.T) {
@@ -353,6 +393,48 @@ func TestFromCompleteRequest_WithLogprobs(t *testing.T) {
 
 	if result.TopLogprobs != 5 {
 		t.Errorf("expected TopLogprobs to be 5, got %d", result.TopLogprobs)
+	}
+}
+
+func TestToListCompletionUsesModelIdentity(t *testing.T) {
+	modified := time.Unix(1234567890, 0).UTC()
+
+	result := ToListCompletion(api.ListResponse{
+		Models: []api.ListModelResponse{
+			{
+				Name:       "legacy-name:latest",
+				Model:      "namespace/exposed-model:latest",
+				ModifiedAt: modified,
+			},
+			{
+				Name:       "fallback-name:latest",
+				ModifiedAt: modified.Add(time.Second),
+			},
+		},
+	})
+
+	if result.Object != "list" {
+		t.Fatalf("object = %q, want list", result.Object)
+	}
+	if len(result.Data) != 2 {
+		t.Fatalf("models = %d, want 2", len(result.Data))
+	}
+
+	if result.Data[0].Id != "namespace/exposed-model:latest" {
+		t.Fatalf("id = %q, want model field", result.Data[0].Id)
+	}
+	if result.Data[0].OwnedBy != "namespace" {
+		t.Fatalf("owned_by = %q, want namespace", result.Data[0].OwnedBy)
+	}
+	if result.Data[0].Created != modified.Unix() {
+		t.Fatalf("created = %d, want %d", result.Data[0].Created, modified.Unix())
+	}
+
+	if result.Data[1].Id != "fallback-name:latest" {
+		t.Fatalf("fallback id = %q, want name field", result.Data[1].Id)
+	}
+	if result.Data[1].OwnedBy != "library" {
+		t.Fatalf("fallback owned_by = %q, want library", result.Data[1].OwnedBy)
 	}
 }
 

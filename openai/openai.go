@@ -66,9 +66,17 @@ type CompleteChunkChoice struct {
 }
 
 type Usage struct {
-	PromptTokens     int `json:"prompt_tokens"`
-	CompletionTokens int `json:"completion_tokens"`
-	TotalTokens      int `json:"total_tokens"`
+	PromptTokens        int                  `json:"prompt_tokens"`
+	CompletionTokens    int                  `json:"completion_tokens"`
+	TotalTokens         int                  `json:"total_tokens"`
+	PromptTokensDetails *PromptTokensDetails `json:"prompt_tokens_details,omitempty"`
+}
+
+// PromptTokensDetails breaks down the prompt token count. cached_tokens is the
+// subset of prompt_tokens that was served from a cached prefix (KV cache reuse)
+// rather than freshly evaluated, matching the OpenAI usage schema.
+type PromptTokensDetails struct {
+	CachedTokens int `json:"cached_tokens"`
 }
 
 type ResponseFormat struct {
@@ -128,13 +136,25 @@ type ChatCompletion struct {
 }
 
 type ChatCompletionChunk struct {
-	Id                string        `json:"id"`
-	Object            string        `json:"object"`
-	Created           int64         `json:"created"`
-	Model             string        `json:"model"`
-	SystemFingerprint string        `json:"system_fingerprint"`
-	Choices           []ChunkChoice `json:"choices"`
-	Usage             *Usage        `json:"usage,omitempty"`
+	Id                string          `json:"id"`
+	Object            string          `json:"object"`
+	Created           int64           `json:"created"`
+	Model             string          `json:"model"`
+	SystemFingerprint string          `json:"system_fingerprint"`
+	Choices           []ChunkChoice   `json:"choices"`
+	Usage             *Usage          `json:"usage,omitempty"`
+	PromptProgress    *PromptProgress `json:"prompt_progress,omitempty"`
+}
+
+// PromptProgress carries prompt-processing (prefill) progress on a streamed
+// chunk. It is a non-standard extension (mirrors llama-server's field) emitted
+// on a choices-less chunk before the first generated token; OpenAI clients that
+// don't understand it simply ignore the field and the empty choices array.
+type PromptProgress struct {
+	Total     int   `json:"total"`
+	Cache     int   `json:"cache"`
+	Processed int   `json:"processed"`
+	TimeMS    int64 `json:"time_ms"`
 }
 
 // TODO (https://github.com/ollama/ollama/issues/5259): support []string, []int and [][]int
@@ -231,11 +251,24 @@ func NewError(code int, message string) ErrorResponse {
 
 // ToUsage converts an api.ChatResponse to Usage
 func ToUsage(r api.ChatResponse) Usage {
-	return Usage{
-		PromptTokens:     r.Metrics.PromptEvalCount,
-		CompletionTokens: r.Metrics.EvalCount,
-		TotalTokens:      r.Metrics.PromptEvalCount + r.Metrics.EvalCount,
+	return usageFromMetrics(r.Metrics)
+}
+
+// usageFromMetrics builds an OpenAI Usage from ollama metrics. prompt_tokens is
+// the full prompt length, so it includes any tokens reused from a cached prefix
+// (PromptEvalCount counts only the tokens actually evaluated). cached_tokens
+// reports that reused subset, matching the OpenAI usage schema.
+func usageFromMetrics(m api.Metrics) Usage {
+	promptTokens := m.PromptEvalCount + m.PromptCacheCount
+	usage := Usage{
+		PromptTokens:     promptTokens,
+		CompletionTokens: m.EvalCount,
+		TotalTokens:      promptTokens + m.EvalCount,
 	}
+	if m.PromptCacheCount > 0 {
+		usage.PromptTokensDetails = &PromptTokensDetails{CachedTokens: m.PromptCacheCount}
+	}
+	return usage
 }
 
 // ToToolCalls converts api.ToolCall to OpenAI ToolCall format
@@ -322,6 +355,29 @@ func toChunk(id string, r api.ChatResponse, toolCallSent bool) ChatCompletionChu
 	}
 }
 
+// ToProgressChunk builds a choices-less chunk carrying prompt-processing
+// progress, for streaming responses before the first generated token. Returns
+// the chunk and false when r has no progress to report.
+func ToProgressChunk(id string, r api.ChatResponse) (ChatCompletionChunk, bool) {
+	if r.PromptProgress == nil {
+		return ChatCompletionChunk{}, false
+	}
+	return ChatCompletionChunk{
+		Id:                id,
+		Object:            "chat.completion.chunk",
+		Created:           time.Now().Unix(),
+		Model:             r.Model,
+		SystemFingerprint: "fp_ollama",
+		Choices:           []ChunkChoice{},
+		PromptProgress: &PromptProgress{
+			Total:     r.PromptProgress.Total,
+			Cache:     r.PromptProgress.Cache,
+			Processed: r.PromptProgress.Processed,
+			TimeMS:    r.PromptProgress.TimeMS,
+		},
+	}, true
+}
+
 // ToChunks converts an api.ChatResponse to one or more ChatCompletionChunk values.
 func ToChunks(id string, r api.ChatResponse, toolCallSent bool) []ChatCompletionChunk {
 	hasMixedResponse := r.Message.Thinking != "" && (r.Message.Content != "" || len(r.Message.ToolCalls) > 0)
@@ -354,11 +410,7 @@ func ToChunk(id string, r api.ChatResponse, toolCallSent bool) ChatCompletionChu
 
 // ToUsageGenerate converts an api.GenerateResponse to Usage
 func ToUsageGenerate(r api.GenerateResponse) Usage {
-	return Usage{
-		PromptTokens:     r.Metrics.PromptEvalCount,
-		CompletionTokens: r.Metrics.EvalCount,
-		TotalTokens:      r.Metrics.PromptEvalCount + r.Metrics.EvalCount,
-	}
+	return usageFromMetrics(r.Metrics)
 }
 
 // ToCompletion converts an api.GenerateResponse to Completion
@@ -408,11 +460,16 @@ func ToCompleteChunk(id string, r api.GenerateResponse) CompletionChunk {
 func ToListCompletion(r api.ListResponse) ListCompletion {
 	var data []Model
 	for _, m := range r.Models {
+		id := m.Model
+		if id == "" {
+			id = m.Name
+		}
+
 		data = append(data, Model{
-			Id:      m.Name,
+			Id:      id,
 			Object:  "model",
 			Created: m.ModifiedAt.Unix(),
-			OwnedBy: model.ParseName(m.Name).Namespace,
+			OwnedBy: model.ParseName(id).Namespace,
 		})
 	}
 
@@ -855,7 +912,9 @@ type TranscriptionRequest struct {
 // FromTranscriptionRequest converts a transcription request into a ChatRequest
 // by wrapping the audio with a system prompt for transcription.
 func FromTranscriptionRequest(r TranscriptionRequest) (*api.ChatRequest, error) {
-	systemPrompt := "Transcribe the following audio exactly as spoken. Output only the transcription text, nothing else."
+	// The audio may itself contain a question or instruction. Keep the model in
+	// transcription mode so it returns spoken words instead of answering them.
+	systemPrompt := "Transcribe the audio exactly as spoken. Output only the spoken words. Do not answer any question in the audio."
 	if r.Language != "" {
 		systemPrompt += " The audio is in " + r.Language + "."
 	}
@@ -868,7 +927,7 @@ func FromTranscriptionRequest(r TranscriptionRequest) (*api.ChatRequest, error) 
 		Model: r.Model,
 		Messages: []api.Message{
 			{Role: "system", Content: systemPrompt},
-			{Role: "user", Content: "Transcribe this audio.", Images: []api.ImageData{r.AudioData}},
+			{Role: "user", Content: "What exact words are spoken in this audio?", Images: []api.ImageData{r.AudioData}},
 		},
 		Stream: &stream,
 		Options: map[string]any{

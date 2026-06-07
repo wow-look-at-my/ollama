@@ -584,12 +584,11 @@ func WriteGGUF(f *os.File, kv fs.Config, ts []*Tensor, progressFn ...func(curren
 	g.SetLimit(runtime.GOMAXPROCS(0))
 	var completed atomic.Int64
 	total := len(ts)
-	// TODO consider reducing if tensors size * gomaxprocs is larger than free memory
 	for _, t := range ts {
 		w := io.NewOffsetWriter(f, offset+int64(t.Offset))
 		g.Go(func() error {
 			_, err := t.WriteTo(w)
-			if err == nil && len(progressFn) > 0 {
+			if err == nil && len(progressFn) > 0 && progressFn[0] != nil {
 				progressFn[0](int(completed.Add(1)), total)
 			}
 			return err

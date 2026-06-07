@@ -24,7 +24,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -41,6 +40,7 @@ import (
 	"github.com/ollama/ollama/cmd/config"
 	"github.com/ollama/ollama/cmd/launch"
 	"github.com/ollama/ollama/cmd/tui"
+	"github.com/ollama/ollama/discover"
 	"github.com/ollama/ollama/envconfig"
 	"github.com/ollama/ollama/format"
 	"github.com/ollama/ollama/internal/modelref"
@@ -51,7 +51,6 @@ import (
 	"github.com/ollama/ollama/runner"
 	"github.com/ollama/ollama/server"
 	"github.com/ollama/ollama/types/model"
-	"github.com/ollama/ollama/types/syncmap"
 	"github.com/ollama/ollama/version"
 	xcmd "github.com/ollama/ollama/x/cmd"
 	xcreate "github.com/ollama/ollama/x/create"
@@ -232,9 +231,6 @@ func CreateHandler(cmd *cobra.Command, args []string) error {
 	// This gates both safetensors LLM and imagegen model creation
 	experimental, _ := cmd.Flags().GetBool("experimental")
 	draftQuantize, _ := cmd.Flags().GetString("draft-quantize")
-	if draftQuantize != "" && !experimental {
-		return errors.New("--draft-quantize requires --experimental")
-	}
 	if experimental {
 		if !isLocalhost() {
 			return errors.New("remote safetensor model creation not yet supported")
@@ -329,52 +325,45 @@ func CreateHandler(cmd *cobra.Command, args []string) error {
 	if quantize != "" {
 		req.Quantize = quantize
 	}
-
-	client, err := api.ClientFromEnvironment()
-	if err != nil {
-		return err
+	if draftQuantize != "" {
+		if len(req.DraftFiles) == 0 {
+			return errors.New("--draft-quantize requires a DRAFT model")
+		}
+		req.DraftQuantize = draftQuantize
 	}
 
 	var g errgroup.Group
 	g.SetLimit(max(runtime.GOMAXPROCS(0)-1, 1))
 
-	files := syncmap.NewSyncMap[string, string]()
 	for f, digest := range req.Files {
-		g.Go(func() error {
-			if _, err := createBlob(cmd, client, f, digest, p); err != nil {
-				return err
-			}
-
-			// TODO: this is incorrect since the file might be in a subdirectory
-			//       instead this should take the path relative to the model directory
-			//       but the current implementation does not allow this
-			files.Store(filepath.Base(f), digest)
-			return nil
-		})
+		g.Go(func() error { return server.EnsureBlobFromPath(f, digest) })
 	}
-
-	adapters := syncmap.NewSyncMap[string, string]()
 	for f, digest := range req.Adapters {
-		g.Go(func() error {
-			if _, err := createBlob(cmd, client, f, digest, p); err != nil {
-				return err
-			}
-
-			// TODO: same here
-			adapters.Store(filepath.Base(f), digest)
-			return nil
-		})
+		g.Go(func() error { return server.EnsureBlobFromPath(f, digest) })
 	}
-
+	for f, digest := range req.DraftFiles {
+		g.Go(func() error { return server.EnsureBlobFromPath(f, digest) })
+	}
 	if err := g.Wait(); err != nil {
 		return err
 	}
 
-	req.Files = files.Items()
-	req.Adapters = adapters.Items()
+	basenames := func(m map[string]string) map[string]string {
+		if len(m) == 0 {
+			return nil
+		}
+		out := make(map[string]string, len(m))
+		for f, d := range m {
+			out[filepath.Base(f)] = d
+		}
+		return out
+	}
+	req.Files = basenames(req.Files)
+	req.Adapters = basenames(req.Adapters)
+	req.DraftFiles = basenames(req.DraftFiles)
 
 	bars := make(map[string]*progress.Bar)
-	fn := func(resp api.ProgressResponse) error {
+	fn := func(resp api.ProgressResponse) {
 		if resp.Digest != "" {
 			bar, ok := bars[resp.Digest]
 			if !ok {
@@ -386,11 +375,9 @@ func CreateHandler(cmd *cobra.Command, args []string) error {
 				bars[resp.Digest] = bar
 				p.Add(resp.Digest, bar)
 			}
-
 			bar.Set(resp.Completed)
 		} else if status != resp.Status {
 			spinner.Stop()
-
 			status = resp.Status
 			spinner = progress.NewSpinner(status)
 			p.Add(status, spinner)
@@ -399,75 +386,9 @@ func CreateHandler(cmd *cobra.Command, args []string) error {
 		if resp.Digest == "" && resp.Total > 0 {
 			spinner.SetMessage(fmt.Sprintf("%s (%d/%d)", resp.Status, resp.Completed, resp.Total))
 		}
-
-		return nil
 	}
 
-	if err := client.Create(cmd.Context(), req, fn); err != nil {
-		if strings.Contains(err.Error(), "path or Modelfile are required") {
-			return fmt.Errorf("the ollama server must be updated to use `ollama create` with this client")
-		}
-		return err
-	}
-
-	return nil
-}
-
-func createBlob(cmd *cobra.Command, client *api.Client, path string, digest string, p *progress.Progress) (string, error) {
-	realPath, err := filepath.EvalSymlinks(path)
-	if err != nil {
-		return "", err
-	}
-
-	bin, err := os.Open(realPath)
-	if err != nil {
-		return "", err
-	}
-	defer bin.Close()
-
-	// Get file info to retrieve the size
-	fileInfo, err := bin.Stat()
-	if err != nil {
-		return "", err
-	}
-	fileSize := fileInfo.Size()
-
-	filename := filepath.Base(path)
-	bar := progress.NewBar(fmt.Sprintf("copying %s", filename), fileSize, 0)
-	p.Add(digest, bar)
-
-	var pw progressWriter
-
-	done := make(chan struct{})
-	defer close(done)
-
-	go func() {
-		ticker := time.NewTicker(60 * time.Millisecond)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ticker.C:
-				bar.Set(pw.n.Load())
-			case <-done:
-				bar.Set(fileSize)
-				return
-			}
-		}
-	}()
-
-	if err := client.CreateBlob(cmd.Context(), digest, io.TeeReader(bin, &pw)); err != nil {
-		return "", err
-	}
-	return digest, nil
-}
-
-type progressWriter struct {
-	n atomic.Int64
-}
-
-func (w *progressWriter) Write(p []byte) (n int, err error) {
-	w.n.Add(int64(len(p)))
-	return len(p), nil
+	return server.CreateDirect(cmd.Context(), *req, fn)
 }
 
 func loadOrUnloadModel(cmd *cobra.Command, opts *runOptions) error {
@@ -1281,11 +1202,28 @@ func showInfo(resp *api.ShowResponse, verbose bool, w io.Writer) error {
 
 	if resp.ProjectorInfo != nil {
 		tableRender("Projector", func() (rows [][]string) {
-			arch := resp.ProjectorInfo["general.architecture"].(string)
-			rows = append(rows, []string{"", "architecture", arch})
-			rows = append(rows, []string{"", "parameters", format.HumanNumber(uint64(resp.ProjectorInfo["general.parameter_count"].(float64)))})
-			rows = append(rows, []string{"", "embedding length", strconv.FormatFloat(resp.ProjectorInfo[fmt.Sprintf("%s.vision.embedding_length", arch)].(float64), 'f', -1, 64)})
-			rows = append(rows, []string{"", "dimensions", strconv.FormatFloat(resp.ProjectorInfo[fmt.Sprintf("%s.vision.projection_dim", arch)].(float64), 'f', -1, 64)})
+			arch, _ := resp.ProjectorInfo["general.architecture"].(string)
+			if arch != "" {
+				rows = append(rows, []string{"", "architecture", arch})
+			}
+			if v, ok := resp.ProjectorInfo["general.parameter_count"].(float64); ok {
+				rows = append(rows, []string{"", "parameters", format.HumanNumber(uint64(v))})
+			}
+
+			projectorValue := func(suffix string) (float64, bool) {
+				for _, modality := range []string{"vision", "audio"} {
+					if v, ok := resp.ProjectorInfo[fmt.Sprintf("%s.%s.%s", arch, modality, suffix)].(float64); ok {
+						return v, true
+					}
+				}
+				return 0, false
+			}
+			if v, ok := projectorValue("embedding_length"); ok {
+				rows = append(rows, []string{"", "embedding length", strconv.FormatFloat(v, 'f', -1, 64)})
+			}
+			if v, ok := projectorValue("projection_dim"); ok {
+				rows = append(rows, []string{"", "dimensions", strconv.FormatFloat(v, 'f', -1, 64)})
+			}
 			return
 		})
 	}
@@ -2277,14 +2215,7 @@ func NewCLI() *cobra.Command {
 		Short: "Create a model",
 		Args:  cobra.ExactArgs(1),
 		PreRunE: func(cmd *cobra.Command, args []string) error {
-			// Skip server check for experimental mode (writes directly to disk)
-			if experimental, _ := cmd.Flags().GetBool("experimental"); experimental {
-				return nil
-			}
-			if draftQuantize, _ := cmd.Flags().GetString("draft-quantize"); draftQuantize != "" {
-				return errors.New("--draft-quantize requires --experimental")
-			}
-			return checkServerHeartbeat(cmd, args)
+			return nil
 		},
 		RunE: CreateHandler,
 	}
@@ -2449,6 +2380,16 @@ func NewCLI() *cobra.Command {
 		_ = runner.Execute(args[1:])
 	})
 
+	var gpuDiscoverLibDirs []string
+	gpuDiscoverCmd := &cobra.Command{
+		Use:    "gpu-discover",
+		Hidden: true,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return discover.RunNativeProbeCommand(cmd.Context(), gpuDiscoverLibDirs, os.Stdout)
+		},
+	}
+	gpuDiscoverCmd.Flags().StringArrayVar(&gpuDiscoverLibDirs, "lib-dir", nil, "Ollama runtime library directory")
+
 	envVars := envconfig.AsMap()
 
 	envs := []envconfig.EnvVar{envVars["OLLAMA_HOST"]}
@@ -2489,6 +2430,9 @@ func NewCLI() *cobra.Command {
 				envVars["OLLAMA_KV_CACHE_TYPE"],
 				envVars["OLLAMA_LLM_LIBRARY"],
 				envVars["OLLAMA_GPU_OVERHEAD"],
+				envVars["OLLAMA_IGPU_ENABLE"],
+				envVars["LLAMA_ARG_FIT"],
+				envVars["LLAMA_ARG_FIT_TARGET"],
 				envVars["OLLAMA_LOAD_TIMEOUT"],
 			})
 		default:
@@ -2513,6 +2457,7 @@ func NewCLI() *cobra.Command {
 		copyCmd,
 		deleteCmd,
 		runnerCmd,
+		gpuDiscoverCmd,
 		launch.LaunchCmd(checkServerHeartbeat, runInteractiveTUI),
 	)
 

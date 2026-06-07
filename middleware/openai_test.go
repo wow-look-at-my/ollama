@@ -188,6 +188,60 @@ func TestChatWriter_StreamMixedThinkingAndContentEmitsSplitChunks(t *testing.T) 
 	}
 }
 
+func TestChatWriter_StreamPromptProgressEmitsChoicelessChunk(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	context, _ := gin.CreateTestContext(recorder)
+
+	writer := &ChatWriter{
+		stream:        true,
+		streamOptions: &openai.StreamOptions{IncludeUsage: true},
+		id:            "chatcmpl-test",
+		BaseWriter:    BaseWriter{ResponseWriter: context.Writer},
+	}
+
+	response := api.ChatResponse{
+		Model:          "test-model",
+		Message:        api.Message{Role: "assistant"},
+		PromptProgress: &api.PromptProgress{Total: 100, Cache: 10, Processed: 42, TimeMS: 1234},
+	}
+
+	data, err := json.Marshal(response)
+	if err != nil {
+		t.Fatalf("marshal response: %v", err)
+	}
+
+	if _, err = writer.Write(data); err != nil {
+		t.Fatalf("write response: %v", err)
+	}
+
+	if got := recorder.Header().Get("Content-Type"); got != "text/event-stream" {
+		t.Fatalf("expected Content-Type text/event-stream, got %q", got)
+	}
+
+	frames := sseDataFrames(recorder.Body.String())
+	if len(frames) != 1 {
+		t.Fatalf("expected 1 SSE data frame (progress only, no [DONE]), got %d:\n%s", len(frames), recorder.Body.String())
+	}
+
+	var chunk openai.ChatCompletionChunk
+	if err := json.Unmarshal([]byte(frames[0]), &chunk); err != nil {
+		t.Fatalf("unmarshal progress chunk: %v", err)
+	}
+	if len(chunk.Choices) != 0 {
+		t.Fatalf("expected progress chunk to have no choices, got %d", len(chunk.Choices))
+	}
+	if chunk.PromptProgress == nil {
+		t.Fatal("expected progress chunk to carry prompt_progress")
+	}
+	if chunk.PromptProgress.Processed != 42 || chunk.PromptProgress.Total != 100 {
+		t.Fatalf("expected processed/total 42/100, got %d/%d", chunk.PromptProgress.Processed, chunk.PromptProgress.Total)
+	}
+	if chunk.PromptProgress.Cache != 10 || chunk.PromptProgress.TimeMS != 1234 {
+		t.Fatalf("expected cache/time_ms 10/1234, got %d/%d", chunk.PromptProgress.Cache, chunk.PromptProgress.TimeMS)
+	}
+}
+
 func TestChatWriter_StreamSingleChunkPathStillEmitsOneChunk(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	recorder := httptest.NewRecorder()

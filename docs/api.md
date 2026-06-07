@@ -400,6 +400,7 @@ curl http://localhost:11434/api/generate -d '{
     "num_keep": 5,
     "seed": 42,
     "num_predict": 100,
+    "draft_num_predict": 4,
     "top_k": 20,
     "top_p": 0.9,
     "min_p": 0.0,
@@ -1858,6 +1859,23 @@ GET /api/ps
 
 List models that are currently loaded into memory.
 
+#### Query parameters
+
+- `include` (optional): set to `loading` to additionally list models that are
+  still **loading** into memory (not yet resident). Each such entry is marked
+  `"loading": true` and carries a `"progress"` field — the model-load fraction
+  in `[0, 1)`. Without this parameter the response lists only resident models,
+  exactly as before (the long-standing contract relied on by the CLI and other
+  consumers). Both fields are additive: resident entries omit them, and an
+  unmodified backend that cannot report progress simply returns no loading
+  entries.
+
+  The progress fraction originates from the model runner: while loading,
+  `llama-server`'s `/health` endpoint reports
+  `{"status":"loading model","progress":<float 0..1>}`, which Ollama caches per
+  runner and surfaces here. (`progress` is additive on `/health` too — an older
+  `llama-server` omits it and Ollama reads it as `0`.)
+
 #### Examples
 
 ### Request
@@ -1888,6 +1906,42 @@ A single JSON object will be returned.
       },
       "expires_at": "2024-06-04T14:38:31.83753-07:00",
       "size_vram": 5137025024
+    }
+  ]
+}
+```
+
+### Request (including loading models)
+
+```shell
+curl "http://localhost:11434/api/ps?include=loading"
+```
+
+#### Response
+
+A model still loading into memory appears with `"loading": true` and a
+`"progress"` fraction; resident models appear as above (no `loading`/`progress`).
+
+```json
+{
+  "models": [
+    {
+      "name": "llama3:70b",
+      "model": "llama3:70b",
+      "size": 39327463424,
+      "digest": "786f3184c81ee3d6c1c9c87a6c5d6e5e1e1b1d8e0f9b6e6d2b8f4e2a1c0b9a8f7",
+      "details": {
+        "parent_model": "",
+        "format": "gguf",
+        "family": "llama",
+        "families": ["llama"],
+        "parameter_size": "70.6B",
+        "quantization_level": "Q4_0"
+      },
+      "expires_at": "2024-06-04T14:38:31.83753-07:00",
+      "size_vram": 0,
+      "loading": true,
+      "progress": 0.37
     }
   ]
 }
