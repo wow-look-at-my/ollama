@@ -96,7 +96,10 @@ jobs:
               && { echo "Ready after ${i}s"; exit 0; }
             sleep 1
           done
-          echo "Timed out waiting for ollama" >&2; exit 1
+          echo "Timed out waiting for ollama" >&2
+          echo "===== ollama serve log =====" >&2
+          cat /tmp/ollama.log >&2 || true
+          exit 1
 
       # ── Benchmarks ──────────────────────────────────────────────────────────
       - name: Benchmark quantizations
