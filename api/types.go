@@ -909,6 +909,13 @@ type ProcessModelResponse struct {
 	ExpiresAt     time.Time    `json:"expires_at"`
 	SizeVRAM      int64        `json:"size_vram"`
 	ContextLength int          `json:"context_length"`
+	// Loading is true while the model is still loading into memory rather than
+	// resident. It is only ever set on entries returned by GET /api/ps?include=loading;
+	// the default GET /api/ps lists resident models only, so it stays false there.
+	Loading bool `json:"loading,omitempty"`
+	// Progress is the model-load fraction in [0,1] while Loading is true (omitted
+	// once resident). Sourced from llama-server's /health "progress" field.
+	Progress float32 `json:"progress,omitempty"`
 }
 
 type TokenResponse struct {

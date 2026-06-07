@@ -362,7 +362,10 @@ jobs:
     needs: [changes]
     strategy:
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        # This fork targets Linux + CUDA only (the windows build job is gated off
+        # and Vulkan/MLX/Apple presets were dropped above). The macOS and Windows
+        # test legs are not maintained here, so keep the matrix Linux-only.
+        os: [ubuntu-latest]
     runs-on: ${{ matrix.os }}
     env:
       CGO_ENABLED: '1'

@@ -175,8 +175,10 @@ set(LLAMA_CURL OFF CACHE BOOL "" FORCE)
 set(LLAMA_OPENSSL OFF CACHE BOOL "" FORCE)
 
 # Repointed to the wow-look-at-my/llama.cpp fork that carries the Gemma 4 MTP
-# (gemma4_assistant) port on top of upstream b9409. LLAMA_CPP_VERSION pins the
-# fork tag (mtp-b9409-0.1). To return to stock upstream, restore the ggml-org URL
+# (gemma4_assistant) port on top of upstream b9409. LLAMA_CPP_VERSION pins a ref
+# on the fork's `gemma4-mtp-b9409` line (a tag like mtp-b9409-0.2 or a commit
+# SHA). GIT_TAG accepts a tag, branch, or commit; GitHub serves reachable SHAs so
+# GIT_SHALLOW still works. To return to stock upstream, restore the ggml-org URL
 # and set LLAMA_CPP_VERSION back to a plain upstream tag.
 FetchContent_Declare(
     llama_cpp

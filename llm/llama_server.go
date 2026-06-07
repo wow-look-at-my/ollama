@@ -145,6 +145,13 @@ type llamaServerRunner struct {
 	totalLayers uint64 // maximum offloadable model layers
 	loadStart   time.Time
 
+	// loadProgress caches the most recent model-load fraction in [0,1] parsed
+	// from llama-server's /health "loading model" response. It is updated on
+	// every health poll during WaitUntilRunning and read by the scheduler's
+	// /api/ps handler via LoadProgress() to surface real load progress.
+	loadProgressMu sync.RWMutex
+	loadProgress   float32
+
 	sem *semaphore.Weighted
 
 	launch                  llamaServerLaunchConfig
@@ -976,9 +983,12 @@ func (s *llamaServerRunner) getServerStatus(ctx context.Context) (ServerStatus, 
 		return ServerStatusError, fmt.Errorf("read health response: %w", err)
 	}
 
-	// llama-server returns {"status":"ok"}, {"status":"loading model"}, {"status":"error", ...}
+	// llama-server returns {"status":"ok"}, {"status":"loading model"}, {"status":"error", ...}.
+	// While loading, the Ollama-patched llama-server additionally reports a model-load
+	// fraction as "progress" (0..1); an unmodified llama-server omits it (read as 0).
 	var result struct {
-		Status string `json:"status"`
+		Status   string  `json:"status"`
+		Progress float32 `json:"progress"`
 	}
 	if err := json.Unmarshal(body, &result); err != nil {
 		return ServerStatusError, fmt.Errorf("health unmarshal: %w", err)
@@ -986,14 +996,38 @@ func (s *llamaServerRunner) getServerStatus(ctx context.Context) (ServerStatus, 
 
 	switch result.Status {
 	case "ok":
+		s.setLoadProgress(1)
 		return ServerStatusReady, nil
 	case "loading model":
+		s.setLoadProgress(result.Progress)
 		return ServerStatusLoadingModel, nil
 	case "no slot available":
 		return ServerStatusNoSlotsAvailable, nil
 	default:
 		return ServerStatusError, fmt.Errorf("llama-server error: %s", string(body))
 	}
+}
+
+// setLoadProgress records the latest model-load fraction (clamped to [0,1])
+// parsed from a /health response.
+func (s *llamaServerRunner) setLoadProgress(p float32) {
+	if p < 0 {
+		p = 0
+	} else if p > 1 {
+		p = 1
+	}
+	s.loadProgressMu.Lock()
+	s.loadProgress = p
+	s.loadProgressMu.Unlock()
+}
+
+// LoadProgress returns the most recent model-load fraction in [0,1] observed
+// from llama-server's /health endpoint. It is 0 before any progress is seen and
+// 1 once the server reports ready.
+func (s *llamaServerRunner) LoadProgress() float32 {
+	s.loadProgressMu.RLock()
+	defer s.loadProgressMu.RUnlock()
+	return s.loadProgress
 }
 
 func (s *llamaServerRunner) getServerStatusRetry(ctx context.Context) (ServerStatus, error) {
