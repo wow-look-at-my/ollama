@@ -301,6 +301,11 @@ type CompletionResponse struct {
 	// Logprobs contains log probability information if requested
 	Logprobs []Logprob `json:"logprobs,omitempty"`
 
+	// PromptProgress, when non-nil, is a prefill progress update carrying no
+	// content, emitted during prompt processing when the runner streams progress
+	// (the llama-server return_progress patch). It precedes the first token.
+	PromptProgress *api.PromptProgress `json:"prompt_progress,omitempty"`
+
 	// Image contains base64-encoded image data for image generation
 	Image string `json:"image,omitempty"`
 

@@ -78,6 +78,25 @@ func (w *ChatWriter) writeResponse(data []byte) (int, error) {
 		return 0, err
 	}
 
+	// Prefill progress: emit a choices-less chunk carrying prompt_progress so a
+	// client can show a prompt-processing bar. Only meaningful while streaming
+	// (there is no chunk to attach it to otherwise); never marks the turn done.
+	if chatResponse.PromptProgress != nil {
+		if w.stream {
+			if chunk, ok := openai.ToProgressChunk(w.id, chatResponse); ok {
+				d, err := json.Marshal(chunk)
+				if err != nil {
+					return 0, err
+				}
+				w.ResponseWriter.Header().Set("Content-Type", "text/event-stream")
+				if _, err := w.ResponseWriter.Write([]byte(fmt.Sprintf("data: %s\n\n", d))); err != nil {
+					return 0, err
+				}
+			}
+		}
+		return len(data), nil
+	}
+
 	// chat chunk
 	if w.stream {
 		chunks := openai.ToChunks(w.id, chatResponse, w.toolCallSent)
