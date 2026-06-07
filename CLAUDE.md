@@ -54,6 +54,18 @@ drafter becomes a separate `gemma4_assistant` GGUF:
 ollama create gemma4-mtp -f /models/Modelfile --quantize q4_K_M
 ```
 
+The `/models/Modelfile` is `FROM <gemma-4 target>` + `DRAFT <gemma-4 *-assistant>`
+(both safetensors dirs). For a from-scratch build (download the HF safetensors,
+write the Modelfile, run create) use the one-command helper:
+
+```
+HF_TOKEN=hf_xxx scripts/build-gemma4-mtp.sh
+```
+
+See `docs/gemma4-mtp.md` for the full getting-started guide (prerequisites,
+manual steps, verification, and why the published macOS/MLX `gemma4:31b-coding-mtp-bf16`
+cannot be reused here).
+
 ## How Gemma 4 MTP works in this fork (current architecture)
 
 GGUF models are served by the **C++ `llama-server`** subprocess (`server/sched.go`
@@ -95,6 +107,8 @@ the current design.
 
 ## Key Files
 
+- `docs/gemma4-mtp.md` — getting-started guide (download → Modelfile → create → verify)
+- `scripts/build-gemma4-mtp.sh` — one-command build (HF download + Modelfile + `ollama create`)
 - `convert/convert_gemma4.go` — `ConvertGemma4MTPDraft` (+ `gemma4AssistantModel`): standalone `gemma4_assistant` drafter GGUF
 - `convert/convert_gemma4_assistant_test.go` — converter unit tests (synthetic fixtures)
 - `server/create.go` — `convertMTPDraftFromSafetensors` dispatch (gemma4 vs qwen)

@@ -1,81 +1,106 @@
-# Gemma 4 Multi-Token Prediction (MTP)
+# Building the Gemma 4 MTP model
 
-Gemma 4 models ship with companion MTP assistant models that accelerate inference by predicting multiple tokens per forward pass. The assistant shares the target model's KV cache and operates directly on its hidden states via query-only attention, making it significantly more memory-efficient than traditional speculative decoding.
+This fork serves Gemma 4 with **Multi-Token Prediction (MTP)** speculative
+decoding. MTP needs two pieces:
 
-## Requirements
+1. the full Gemma 4 **target** model, and
+2. a small **drafter** ("assistant") that proposes several tokens the target
+   verifies in one pass.
 
-- NVIDIA GPU with CUDA support (e.g., RTX A6000, A100)
-- Ollama built from this fork
-- Gemma 4 GGUF with bundled assistant tensors (tensors prefixed with `draft.*`)
+In this fork the drafter is a **separate** GGUF with
+`general.architecture = "gemma4_assistant"`. At serve time `llama-server` loads it
+into the target via `--mtp-head` and it cross-attends the target's KV cache (so
+its attention is query-only — no second KV cache). You produce it with a single
+`ollama create` from the Hugging Face safetensors, using a Modelfile with a
+`DRAFT` directive.
 
-## How it works
+> The drafter is **not** embedded into the target GGUF. Bundling `draft.*` tensors
+> into one file is the old, removed design and makes the target loader reject the
+> file (`done_getting_tensors: wrong number of tensors`). Keep the drafter
+> separate — the converter and `ollama create` below do this for you.
 
-The MTP assistant is a lightweight model (~10x smaller than the target) that predicts multiple tokens ahead. It shares the target's KV cache -- its attention layers compute only queries and read K/V directly from the target's cache. This means no second KV cache, no separate prefill, and minimal extra memory.
+## TL;DR
 
-The inference cycle:
-1. Target model forward pass on current token -> logits + hidden state
-2. Draft N tokens using the assistant (single-position: RoPE position stays fixed, hidden state advances)
-3. Verify all N draft tokens in one batched target forward pass
-4. Accept the prefix that matches, reject the rest
-5. Emit all accepted tokens + the correct next token
-
-Greedy MTP (temperature=0) is mathematically equivalent to standard autoregressive decoding -- the output is identical, just faster.
-
-## Quickstart
-
-### With pre-built GGUFs
-
-If you have a Gemma 4 GGUF that already contains `draft.*` assistant tensors:
-
-```bash
-ollama create mymodel -f Modelfile
-ollama run mymodel
+```sh
+# read-only HF token with access to the (gated) google/gemma-4 repos
+export HF_TOKEN=hf_xxx
+# this fork's ollama must be built and `ollama serve` running on localhost
+scripts/build-gemma4-mtp.sh
 ```
 
-MTP engages automatically for greedy decoding (temperature=0). No flags needed.
+That downloads the target + drafter, writes a Modelfile, and runs `ollama create`.
+Defaults: model `gemma4-mtp`, target `google/gemma-4-31B-it`, drafter
+`google/gemma-4-31B-it-assistant`, quantize `q4_K_M`. Override with env vars
+(`MODEL_NAME`, `TARGET_REPO`, `DRAFT_REPO`, `QUANTIZE`, `DRAFT_QUANTIZE`,
+`WORKDIR`).
 
-### From HuggingFace safetensors
+## Can I just pull `gemma4:31b-coding-mtp-bf16` and quantize it?
 
-Download the target model and its MTP assistant. The assistant follows the `{model}-assistant` naming convention:
+No. That published artifact is **macOS/MLX-gated** (`HTTP 412: this model requires
+macOS`) and is an **MLX** model — its MTP is baked into the MLX format, not the
+separate `gemma4_assistant` GGUF this fork's `llama-server` loads via `--mtp-head`.
+You must build from the Hugging Face safetensors as below.
 
+## Prerequisites
+
+- This fork's `ollama` binary built and on `PATH`
+  (`go build -o /usr/bin/ollama .`), with `ollama serve` running on localhost.
+- `HF_TOKEN` with read access to `google/gemma-4-31B-it` and
+  `google/gemma-4-31B-it-assistant` (gated — accept the license on HF once).
+- `hf` or `huggingface-cli` on `PATH` (`pip install -U huggingface_hub`).
+- Disk: the target is ~60 GB at bf16; with the GGUF output and scratch space,
+  leave ~100 GB free. The drafter is ~1 GB.
+
+## Manual steps
+
+If you'd rather not use the script:
+
+1. Download both repos:
+   ```sh
+   hf download google/gemma-4-31B-it           --local-dir ~/gemma4-mtp/target
+   hf download google/gemma-4-31B-it-assistant --local-dir ~/gemma4-mtp/draft
+   ```
+2. Write a `Modelfile`:
+   ```
+   FROM ~/gemma4-mtp/target
+   DRAFT ~/gemma4-mtp/draft
+   ```
+   `FROM` is the target safetensors directory; `DRAFT` is the assistant
+   safetensors directory. `ollama create` converts the target to GGUF and the
+   drafter to a standalone `gemma4_assistant` GGUF (a `MediaTypeImageDraft`
+   layer).
+3. Create the model:
+   ```sh
+   ollama create gemma4-mtp -f Modelfile --quantize q4_K_M
+   ```
+   Add `--draft-quantize <level>` to quantize the drafter too (it is small, so
+   this is optional).
+
+## Verify
+
+MTP only helps at **temperature 0** (greedy), where it is mathematically
+equivalent to plain autoregressive decoding — identical output, just faster:
+
+```sh
+curl http://localhost:11434/api/generate -d '{
+  "model":"gemma4-mtp","prompt":"What is 2+2?","stream":false,
+  "options":{"temperature":0,"num_ctx":4096}
+}'
 ```
-models/
-  gemma-4-27B-it/
-    config.json
-    model-00001-of-00006.safetensors
-    ...
-  gemma-4-27B-it-assistant/
-    config.json
-    model.safetensors
-```
 
-Create with the DRAFT directive:
+In the `llama-server` logs, confirm the drafter is wired up: look for
+`--spec-type gemma4-mtp --mtp-head <path>` and the assistant loading as
+`gemma4_assistant`.
 
-```
-FROM ./gemma-4-27B-it
-DRAFT ./gemma-4-27B-it-assistant
-```
+## Notes
 
-```bash
-ollama create mymodel -f Modelfile
-```
-
-The converter bundles both target and assistant tensors into a single GGUF.
-
-## When MTP activates
-
-MTP is used when all of these are true:
-- The model has `draft.*` tensors loaded (DraftModel is non-nil)
-- Temperature is 0 (greedy decoding)
-- Logprobs are not requested
-- The sequence has not hit its prediction limit
-
-## Tuning
-
-The default draft count is 4 tokens per cycle. This can be adjusted via environment variables (coming soon).
-
-## Supported models
-
-Models with these HuggingFace architectures have MTP support:
-- Target: `Gemma4ForCausalLM`, `Gemma4ForConditionalGeneration`
-- Assistant: `Gemma4AssistantForCausalLM`
+- Tested on an RTX A6000 (49 GB). At `q4_K_M` + `num_ctx=4096` the target plus
+  drafter use ~23.7 GiB of VRAM.
+- The drafter carries the target's tokenizer (the runtime compares vocab text),
+  and `gemma4_assistant.n_embd_backbone` must equal the target's embedding length
+  (5376 for `gemma-4-31B-it`). The converter handles both automatically.
+- Other sizes work too — point `TARGET_REPO`/`DRAFT_REPO` at the matching pair,
+  e.g. `google/gemma-4-12B-it` + `google/gemma-4-12B-it-assistant`.
+- Converter internals and the on-disk contract: see `convert/convert_gemma4.go`
+  (`ConvertGemma4MTPDraft`) and the companion `wow-look-at-my/llama.cpp` fork's
+  `CLAUDE.md`.
