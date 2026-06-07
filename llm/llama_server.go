@@ -1171,6 +1171,7 @@ type llamaServerCompletionRequest struct {
 	JsonSchema      json.RawMessage `json:"json_schema,omitempty"`
 	NProbs          int             `json:"n_probs,omitempty"`
 	PreservedTokens []string        `json:"preserved_tokens,omitempty"`
+	ReturnProgress  bool            `json:"return_progress,omitempty"`
 }
 
 func llamaServerPreservedTokens(parserTokens []string, toolCallTag string) []string {
@@ -1231,11 +1232,23 @@ type llamaServerCompletionResponse struct {
 	StopType string `json:"stop_type"`
 	Timings  struct {
 		PromptN   int     `json:"prompt_n"`
+		CacheN    int     `json:"cache_n"`
 		PromptMS  float64 `json:"prompt_ms"`
 		PredictN  int     `json:"predicted_n"`
 		PredictMS float64 `json:"predicted_ms"`
 	} `json:"timings"`
 	CompletionProbabilities []llamaServerTokenProb `json:"completion_probabilities"`
+	// PromptProgress is present on content-less chunks emitted during prefill when
+	// return_progress is set (Processed/Total is the overall fraction done).
+	PromptProgress *llamaServerPromptProgress `json:"prompt_progress"`
+}
+
+// llamaServerPromptProgress mirrors llama-server's prompt_progress object.
+type llamaServerPromptProgress struct {
+	Total     int   `json:"total"`
+	Cache     int   `json:"cache"`
+	Processed int   `json:"processed"`
+	TimeMS    int64 `json:"time_ms"`
 }
 
 type llamaServerChatChoice struct {
@@ -1262,6 +1275,7 @@ type llamaServerChatResponse struct {
 	Choices []llamaServerChatChoice `json:"choices"`
 	Timings struct {
 		PromptN   int     `json:"prompt_n"`
+		CacheN    int     `json:"cache_n"`
 		PromptMS  float64 `json:"prompt_ms"`
 		PredictN  int     `json:"predicted_n"`
 		PredictMS float64 `json:"predicted_ms"`
@@ -1331,6 +1345,10 @@ func (s *llamaServerRunner) Completion(ctx context.Context, req CompletionReques
 		TypicalP:        req.Options.TypicalP,
 		Seed:            req.Options.Seed,
 		PreservedTokens: llamaServerPreservedTokens(req.PreservedTokens, req.ToolCallTag),
+		// Ask llama-server to stream prompt-processing progress so callers can show
+		// a prefill progress bar on long prompts. The progress arrives as extra
+		// content-less chunks during prefill and is otherwise inert.
+		ReturnProgress: true,
 	}
 
 	if req.Logprobs {
@@ -1439,6 +1457,21 @@ func (s *llamaServerRunner) Completion(ctx context.Context, req CompletionReques
 				return fmt.Errorf("error unmarshalling llama-server response: %v", err)
 			}
 
+			// Prefill progress chunks carry no content. Forward them and skip the
+			// token-repeat detection below, which would otherwise treat the empty
+			// content of many progress updates as a repeating token.
+			if lsResp.PromptProgress != nil && !lsResp.Stop {
+				fn(CompletionResponse{
+					PromptProgress: &api.PromptProgress{
+						Total:     lsResp.PromptProgress.Total,
+						Cache:     lsResp.PromptProgress.Cache,
+						Processed: lsResp.PromptProgress.Processed,
+						TimeMS:    lsResp.PromptProgress.TimeMS,
+					},
+				})
+				continue
+			}
+
 			// Token repeat detection
 			switch {
 			case strings.TrimSpace(lsResp.Content) == lastToken:
@@ -1471,6 +1504,7 @@ func (s *llamaServerRunner) Completion(ctx context.Context, req CompletionReques
 					Done:               true,
 					DoneReason:         doneReason,
 					PromptEvalCount:    lsResp.Timings.PromptN,
+					PromptCacheCount:   lsResp.Timings.CacheN,
 					PromptEvalDuration: time.Duration(lsResp.Timings.PromptMS * float64(time.Millisecond)),
 					EvalCount:          lsResp.Timings.PredictN,
 					EvalDuration:       time.Duration(lsResp.Timings.PredictMS * float64(time.Millisecond)),
@@ -1767,6 +1801,7 @@ func (s *llamaServerRunner) Chat(ctx context.Context, req ChatRequest, fn func(C
 				resp.Done = true
 				resp.DoneReason = doneReason
 				resp.PromptEvalCount = lsResp.Timings.PromptN
+				resp.PromptCacheCount = lsResp.Timings.CacheN
 				resp.PromptEvalDuration = time.Duration(lsResp.Timings.PromptMS * float64(time.Millisecond))
 				resp.EvalCount = lsResp.Timings.PredictN
 				resp.EvalDuration = time.Duration(lsResp.Timings.PredictMS * float64(time.Millisecond))

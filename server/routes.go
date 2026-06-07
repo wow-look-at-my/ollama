@@ -640,6 +640,7 @@ func (s *Server) GenerateHandler(c *gin.Context) {
 				Done:      cr.Done,
 				Metrics: api.Metrics{
 					PromptEvalCount:    cr.PromptEvalCount,
+					PromptCacheCount:   cr.PromptCacheCount,
 					PromptEvalDuration: cr.PromptEvalDuration,
 					EvalCount:          cr.EvalCount,
 					EvalDuration:       cr.EvalDuration,
@@ -2916,6 +2917,19 @@ func (s *Server) ChatHandler(c *gin.Context) {
 				ToolCallTag:     toolCallTagForCompletion(toolParser),
 				LeadingBOS:      leadingBOSForModel(m),
 			}, func(r llm.CompletionResponse) {
+				// Prefill progress arrives before any content; forward it as a
+				// content-less response so the OpenAI/native stream can surface a
+				// prompt-processing progress bar, then wait for real tokens.
+				if r.PromptProgress != nil {
+					ch <- api.ChatResponse{
+						Model:          req.Model,
+						CreatedAt:      time.Now().UTC(),
+						Message:        api.Message{Role: "assistant"},
+						PromptProgress: r.PromptProgress,
+					}
+					return
+				}
+
 				res := api.ChatResponse{
 					Model:     req.Model,
 					CreatedAt: time.Now().UTC(),
@@ -2923,6 +2937,7 @@ func (s *Server) ChatHandler(c *gin.Context) {
 					Done:      r.Done,
 					Metrics: api.Metrics{
 						PromptEvalCount:    r.PromptEvalCount,
+						PromptCacheCount:   r.PromptCacheCount,
 						PromptEvalDuration: r.PromptEvalDuration,
 						EvalCount:          r.EvalCount,
 						EvalDuration:       r.EvalDuration,
@@ -3127,6 +3142,7 @@ func (s *Server) handleNativeChat(c *gin.Context, req api.ChatRequest, m *Model,
 				Done:      r.Done,
 				Metrics: api.Metrics{
 					PromptEvalCount:    r.PromptEvalCount,
+					PromptCacheCount:   r.PromptCacheCount,
 					PromptEvalDuration: r.PromptEvalDuration,
 					EvalCount:          r.EvalCount,
 					EvalDuration:       r.EvalDuration,

@@ -559,7 +559,24 @@ type ChatResponse struct {
 	// if requested via the Logprobs parameter.
 	Logprobs []Logprob `json:"logprobs,omitempty"`
 
+	// PromptProgress, when set, is a prompt-processing (prefill) progress update
+	// for a streaming request. It is emitted before the first generated token
+	// while a long prompt is being ingested and carries no message content.
+	PromptProgress *PromptProgress `json:"prompt_progress,omitempty"`
+
 	Metrics
+}
+
+// PromptProgress reports prompt-processing (prefill) progress for a streaming
+// request, surfaced from the runner's return_progress stream. Total is the
+// prompt length in tokens, Cache the count reused from the prompt cache,
+// Processed the number evaluated so far (Processed/Total is the overall
+// fraction done), and TimeMS the elapsed prefill time in milliseconds.
+type PromptProgress struct {
+	Total     int   `json:"total"`
+	Cache     int   `json:"cache"`
+	Processed int   `json:"processed"`
+	TimeMS    int64 `json:"time_ms"`
 }
 
 // DebugInfo contains debug information for template rendering
@@ -573,8 +590,13 @@ type Metrics struct {
 	LoadDuration       time.Duration `json:"load_duration,omitempty"`
 	PromptEvalCount    int           `json:"prompt_eval_count,omitempty"`
 	PromptEvalDuration time.Duration `json:"prompt_eval_duration,omitempty"`
-	EvalCount          int           `json:"eval_count,omitempty"`
-	EvalDuration       time.Duration `json:"eval_duration,omitempty"`
+	// PromptCacheCount is the number of prompt tokens that were reused from the
+	// KV cache (a cached prefix) instead of being evaluated. PromptEvalCount
+	// counts only the tokens actually processed, so the full prompt length is
+	// PromptEvalCount + PromptCacheCount.
+	PromptCacheCount int           `json:"prompt_cache_count,omitempty"`
+	EvalCount        int           `json:"eval_count,omitempty"`
+	EvalDuration     time.Duration `json:"eval_duration,omitempty"`
 }
 
 // Options specified in [GenerateRequest].  If you add a new option here, also
