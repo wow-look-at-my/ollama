@@ -1445,7 +1445,6 @@ func TestCreateHandler(t *testing.T) {
 	}
 }
 
-
 func TestCreateHandlerDraftQuantizeRequiresDraft(t *testing.T) {
 	dir := t.TempDir()
 	modelfile := filepath.Join(dir, "Modelfile")
