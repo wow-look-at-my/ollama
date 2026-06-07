@@ -75,7 +75,7 @@ func testFusedMixture(t *testing.T, exe string, tied bool) {
 	if !tied {
 		specs = append(specs, spec{"output.weight", nEmbd, nVocab})
 	}
-	for i := 0; i < nLayer; i++ {
+	for i := range nLayer {
 		p := "blk." + itoa(i) + "."
 		specs = append(specs,
 			spec{p + "attn_q.weight", nEmbd, nEmbd},
