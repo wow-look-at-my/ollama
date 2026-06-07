@@ -2370,7 +2370,19 @@ func (s *Server) SignoutHandler(c *gin.Context) {
 func (s *Server) PsHandler(c *gin.Context) {
 	models := []api.ProcessModelResponse{}
 
+	// By default /api/ps lists only models resident in memory, preserving the
+	// long-standing contract for the CLI and other consumers. ?include=loading
+	// additionally reports models still loading into memory, each marked
+	// loading:true with a 0..1 progress fraction.
+	includeLoading := c.Query("include") == "loading"
+
+	s.sched.loadedMu.Lock()
 	for _, v := range s.sched.loaded {
+		loading := v.loading.Load()
+		if loading && !includeLoading {
+			continue
+		}
+
 		m := v.model
 		displayName := model.ParseName(m.ShortName).DisplayShortest()
 		modelDetails := api.ModelDetails{
@@ -2396,6 +2408,12 @@ func (s *Server) PsHandler(c *gin.Context) {
 			mr.Size = int64(total)
 			mr.SizeVRAM = int64(vram)
 		}
+		if loading {
+			mr.Loading = true
+			if v.llama != nil {
+				mr.Progress = v.llama.LoadProgress()
+			}
+		}
 		// The scheduler waits to set expiresAt, so if a model is loading it's
 		// possible that it will be set to the unix epoch. For those cases, just
 		// calculate the time w/ the sessionDuration instead.
@@ -2406,6 +2424,7 @@ func (s *Server) PsHandler(c *gin.Context) {
 
 		models = append(models, mr)
 	}
+	s.sched.loadedMu.Unlock()
 
 	slices.SortStableFunc(models, func(i, j api.ProcessModelResponse) int {
 		// longest duration remaining listed first

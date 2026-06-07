@@ -57,6 +57,31 @@ Setting `OLLAMA_LLAMA_CPP_COMPAT=0` disables the hook bodies for internal
 create-time validation and for models that are already known to be
 llama.cpp-compatible on disk.
 
+## Model-load progress
+
+Model-load progress is **not** part of this patch — it lives directly in the
+pinned llama.cpp source (`LLAMA_CPP_VERSION`, the `gemma4-mtp-b9409` line). The
+server reports the load fraction llama.cpp already computes so Ollama can show a
+real 0..1 value while a cold model loads (instead of an indefinite spinner):
+
+- `tools/server/server-common.h` adds a header-only `server_load_progress()`
+  accessor returning a shared `std::atomic<float>` in `[0,1]`.
+- `tools/server/server-context.cpp` sets `params.load_progress_callback` before
+  `common_init_from_params()`, so the model loader's `progress_callback`
+  (`size_done / size_data` in `llama_model_loader::load_all_data`) stores the
+  fraction into that atomic as tensors are read.
+- `tools/server/server-http.cpp` makes the not-ready middleware answer the
+  `/health` and `/v1/health` endpoints with
+  `{"status":"loading model","progress":<float 0..1>}` instead of the generic
+  503 error body.
+
+`llm/llama_server.go` `getServerStatus` parses the fraction (additive: an
+unmodified llama-server omits `progress` and the Go side reads it as 0/absent)
+and surfaces it via `/api/ps?include=loading` — see `docs/api.md`. To re-derive
+the change against the pinned source, see the `wow-look-at-my/llama.cpp` commit
+on the `gemma4-mtp-b9409` line that `LLAMA_CPP_VERSION` points at.
+
+
 ## Supported Transformations
 
 This table tracks the dispatch surface. Keep it brief; the handler comments in
