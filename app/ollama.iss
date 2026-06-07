@@ -14,7 +14,6 @@
 #define MyAppPublisher "Ollama"
 #define MyAppURL "https://ollama.com/"
 #define MyAppExeName "ollama app.exe"
-#define LlamaServerExeName "llama-server.exe"
 #define MyIcon ".\assets\app.ico"
 
 [Setup]
@@ -127,7 +126,6 @@ Filename: "{cmd}"; Parameters: "/C set PATH={app};%PATH% & ""{app}\{#MyAppExeNam
 ; Filename: "{cmd}"; Parameters: "/C ""taskkill /im ollama.exe /f /t"; Flags: runhidden
 Filename: "taskkill"; Parameters: "/im ""{#MyAppExeName}"" /f /t"; Flags: runhidden
 Filename: "taskkill"; Parameters: "/im ""ollama.exe"" /f /t"; Flags: runhidden
-Filename: "taskkill"; Parameters: "/im ""{#LlamaServerExeName}"" /f /t"; Flags: runhidden
 ; HACK!  need to give the server and app enough time to exit
 ; TODO - convert this to a Pascal code script so it waits until they're no longer running, then completes
 Filename: "{cmd}"; Parameters: "/c timeout 5"; Flags: runhidden
@@ -327,8 +325,5 @@ procedure TaskKill(FileName: String);
 var
   ResultCode: Integer;
 begin
-    Exec('taskkill.exe', '/f /t /im ' + '"' + FileName + '"', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
-    if FileName <> '{#LlamaServerExeName}' then begin
-      Exec('taskkill.exe', '/f /t /im "{#LlamaServerExeName}"', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
-    end;
+    Exec('taskkill.exe', '/f /im ' + '"' + FileName + '"', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
 end;

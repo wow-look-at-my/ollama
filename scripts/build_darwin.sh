@@ -21,7 +21,7 @@ set -e
 
 status() { echo >&2 ">>> $@"; }
 usage() {
-    echo "usage: $(basename $0) [build package app sign]"
+    echo "usage: $(basename $0) [build app [sign]]"
     exit 1
 }
 
@@ -130,7 +130,7 @@ _merge_darwin_payload() {
     done
 }
 
-_prepare_darwin_runtime() {
+_sign_darwin() {
     status "Creating universal binary..."
     mkdir -p dist/darwin
     lipo -create -output dist/darwin/ollama dist/darwin-amd64/ollama dist/darwin-arm64/ollama
@@ -146,23 +146,7 @@ _prepare_darwin_runtime() {
     lipo dist/darwin/llama-quantize -verify_arch x86_64 arm64
 
     _merge_darwin_payload
-}
 
-_create_darwin_runtime_tarball() {
-    status "Creating universal tarball..."
-    rm -f dist/ollama-darwin.tar dist/ollama-darwin.tgz
-    tar -cf dist/ollama-darwin.tar --strip-components 2 dist/darwin/ollama dist/darwin/llama-server dist/darwin/llama-quantize
-    tar -rf dist/ollama-darwin.tar --strip-components 4 dist/darwin/lib/ollama
-    gzip -9vc <dist/ollama-darwin.tar >dist/ollama-darwin.tgz
-}
-
-_package_darwin_runtime() {
-    _prepare_darwin_runtime
-    _create_darwin_runtime_tarball
-}
-
-_sign_darwin() {
-    _prepare_darwin_runtime
     if [ -n "$APPLE_IDENTITY" ]; then
         for F in dist/darwin/ollama dist/darwin/llama-server dist/darwin/llama-quantize dist/darwin/lib/ollama/* dist/darwin/lib/ollama/mlx_metal_v*/*; do
             [ -f "$F" ] && [ ! -L "$F" ] || continue
@@ -176,7 +160,10 @@ _sign_darwin() {
         rm -f "$TEMP"
     fi
 
-    _create_darwin_runtime_tarball
+    status "Creating universal tarball..."
+    tar -cf dist/ollama-darwin.tar --strip-components 2 dist/darwin/ollama dist/darwin/llama-server dist/darwin/llama-quantize
+    tar -rf dist/ollama-darwin.tar --strip-components 4 dist/darwin/lib/ollama
+    gzip -9vc <dist/ollama-darwin.tar >dist/ollama-darwin.tgz
 }
 
 _build_macapp() {
@@ -295,7 +282,6 @@ fi
 for CMD in "$@"; do
     case $CMD in
         build) _build_darwin ;;
-        package) _package_darwin_runtime ;;
         sign) _sign_darwin ;;
         app) _build_macapp ;;
         *) usage ;;
