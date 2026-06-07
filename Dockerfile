@@ -241,8 +241,13 @@ ARG CGO_CFLAGS
 ARG CGO_CXXFLAGS
 ENV CGO_CFLAGS="${CGO_CFLAGS}"
 ENV CGO_CXXFLAGS="${CGO_CXXFLAGS}"
+# .dockerignore drops some tracked paths (e.g. app/) from the context, so git
+# sees them as deleted and would stamp the build "-dirty". Restore just those
+# missing tracked files from the copied .git before building — genuine local
+# modifications are left untouched, so a real dirty tree still reads as dirty.
 RUN --mount=type=cache,target=/root/.cache/go-build \
     git config --global --add safe.directory '*' \
+    && { git ls-files -d -z | xargs -0 -r git checkout -- 2>/dev/null || true; } \
     && go build -trimpath -buildmode=pie -o /bin/ollama .
 
 #
