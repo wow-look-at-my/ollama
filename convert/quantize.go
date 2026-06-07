@@ -13,7 +13,21 @@ const (
 	qkK      = 256
 	kScaleSz = 12
 	blockQ4K = 2 + 2 + kScaleSz + qkK/2 // 144 bytes: 2xFP16 + 12 scales + 128 quants
+	blockQ6K = qkK/2 + qkK/4 + qkK/16 + 2 // 210 bytes: 128 ql + 64 qh + 16 int8 scales + FP16 d
 )
+
+// groupMaxEps mirrors ggml's GROUP_MAX_EPS (1e-15f): blocks whose largest
+// magnitude falls below it are emitted as all-zero.
+const groupMaxEps float32 = 1e-15
+
+// nearestInt mirrors ggml's nearest_int: round-half-to-even via the 1.5*2^23
+// magic-number trick. The K-quant kernels depend on this exact rounding;
+// math.Round (half away from zero) would diverge on ties and break the
+// bit-for-bit match with llama-quantize.
+func nearestInt(fval float32) int {
+	val := fval + 12582912.0 // 1.5 * 2^23 forces the integer into the low mantissa bits
+	return int(int32(math.Float32bits(val)&0x007fffff) - 0x00400000)
+}
 
 func quantizeQ8_0(src []float32) []byte {
 	nBlocks := len(src) / qk80
@@ -92,8 +106,8 @@ func quantizeQ4_K(src []float32) []byte {
 
 		var packedScales [kScaleSz]byte
 		for j := range 8 {
-			ls := min(63, int(roundf(invScale*scales[j])))
-			lm := min(63, int(roundf(invMin*mins[j])))
+			ls := min(63, nearestInt(invScale*scales[j]))
+			lm := min(63, nearestInt(invMin*mins[j]))
 			if j < 4 {
 				packedScales[j] = uint8(ls)
 				packedScales[j+4] = uint8(lm)
@@ -104,8 +118,8 @@ func quantizeQ4_K(src []float32) []byte {
 			}
 		}
 
-		binary.LittleEndian.PutUint16(buf[off:], float16.Fromfloat32(maxScale/63.0).Bits())
-		binary.LittleEndian.PutUint16(buf[off+2:], float16.Fromfloat32(maxMin/63.0).Bits())
+		binary.LittleEndian.PutUint16(buf[off:], ggmlFP32ToFP16(maxScale/63.0))
+		binary.LittleEndian.PutUint16(buf[off+2:], ggmlFP32ToFP16(maxMin/63.0))
 		copy(buf[off+4:off+4+kScaleSz], packedScales[:])
 
 		for j := range 8 {
@@ -117,7 +131,7 @@ func quantizeQ4_K(src []float32) []byte {
 			}
 			dm := float16.Frombits(binary.LittleEndian.Uint16(buf[off+2:])).Float32() * float32(m)
 			for ii := range 32 {
-				l := int(roundf((x[32*j+ii] + dm) / d))
+				l := nearestInt((x[32*j+ii] + dm) / d)
 				if l < 0 {
 					l = 0
 				}
@@ -138,6 +152,126 @@ func quantizeQ4_K(src []float32) []byte {
 	}
 
 	return buf
+}
+
+// quantizeQ6_K mirrors ggml's quantize_row_q6_K_ref. Each 256-element
+// super-block is split into 16 sub-blocks of 16: each sub-block scale comes
+// from makeQXQuants, the super-block scale is the largest-magnitude sub-scale,
+// and quants are 6-bit (4 low bits packed into ql, 2 high bits into qh).
+func quantizeQ6_K(src []float32) []byte {
+	nBlocks := len(src) / qkK
+	buf := make([]byte, nBlocks*blockQ6K)
+
+	var L [qkK]uint8
+	var scales [qkK / 16]float32
+
+	for i := range nBlocks {
+		x := src[i*qkK : (i+1)*qkK]
+		off := i * blockQ6K
+		qlOff := off
+		qhOff := off + qkK/2
+		scOff := off + qkK/2 + qkK/4
+		dOff := off + qkK/2 + qkK/4 + qkK/16
+
+		var maxScale, maxAbsScale float32
+		for ib := range qkK / 16 {
+			scale := makeQXQuants(16, 32, x[16*ib:16*ib+16])
+			scales[ib] = scale
+			if a := float32Abs(scale); a > maxAbsScale {
+				maxAbsScale = a
+				maxScale = scale
+			}
+		}
+
+		if maxAbsScale < groupMaxEps {
+			// all-zero block: buf is already zeroed and ggmlFP32ToFP16(0) == 0
+			continue
+		}
+
+		iscale := -128.0 / maxScale
+		binary.LittleEndian.PutUint16(buf[dOff:], ggmlFP32ToFP16(1.0/iscale))
+		for ib := range qkK / 16 {
+			buf[scOff+ib] = byte(int8(min(127, nearestInt(iscale*scales[ib]))))
+		}
+
+		d := float16.Frombits(binary.LittleEndian.Uint16(buf[dOff:])).Float32()
+		for j := range qkK / 16 {
+			dj := d * float32(int8(buf[scOff+j]))
+			if dj == 0 {
+				continue
+			}
+			for ii := range 16 {
+				l := max(-32, min(31, nearestInt(x[16*j+ii]/dj)))
+				L[16*j+ii] = uint8(l + 32)
+			}
+		}
+
+		for j := 0; j < qkK; j += 128 {
+			g := j / 128
+			ql := buf[qlOff+g*64:]
+			qh := buf[qhOff+g*32:]
+			for l := range 32 {
+				q1 := L[j+l+0] & 0xF
+				q2 := L[j+l+32] & 0xF
+				q3 := L[j+l+64] & 0xF
+				q4 := L[j+l+96] & 0xF
+				ql[l+0] = q1 | (q3 << 4)
+				ql[l+32] = q2 | (q4 << 4)
+				qh[l] = (L[j+l] >> 4) | ((L[j+l+32] >> 4) << 2) | ((L[j+l+64] >> 4) << 4) | ((L[j+l+96] >> 4) << 6)
+			}
+		}
+	}
+
+	return buf
+}
+
+// makeQXQuants mirrors ggml's make_qx_quants for rmse_type == 1 with no
+// importance weights (the configuration q6_K uses): the per-element weight is
+// x*x. It returns the block scale used to reconstruct values.
+func makeQXQuants(n, nmax int, x []float32) float32 {
+	var maxv, amax float32
+	for i := range n {
+		if ax := float32Abs(x[i]); ax > amax {
+			amax = ax
+			maxv = x[i]
+		}
+	}
+	if amax < groupMaxEps {
+		return 0
+	}
+	iscale := float32(-nmax) / maxv
+	var sumlx, suml2 float32
+	for i := range n {
+		l := max(-nmax, min(nmax-1, nearestInt(iscale*x[i])))
+		w := x[i] * x[i]
+		fl := float32(l)
+		sumlx += w * x[i] * fl
+		suml2 += w * fl * fl
+	}
+	var scale float32
+	if suml2 != 0 {
+		scale = sumlx / suml2
+	}
+	best := scale * sumlx
+	for is := -9; is <= 9; is++ {
+		if is == 0 {
+			continue
+		}
+		iscale = -(float32(nmax) + 0.1*float32(is)) / maxv
+		sumlx, suml2 = 0, 0
+		for i := range n {
+			l := max(-nmax, min(nmax-1, nearestInt(iscale*x[i])))
+			w := x[i] * x[i]
+			fl := float32(l)
+			sumlx += w * x[i] * fl
+			suml2 += w * fl * fl
+		}
+		if suml2 > 0 && sumlx*sumlx > best*suml2 {
+			scale = sumlx / suml2
+			best = scale * sumlx
+		}
+	}
+	return scale
 }
 
 func getScaleMinK4(j int, q []uint8, d, m *uint8) {
@@ -181,7 +315,7 @@ func makeQKX2Quants(n, nmax int, x, weights []float32, L []uint8, theMin *float3
 	scale := 1.0 / iscale
 	var bestError float32
 	for i := range n {
-		l := int(roundf(iscale * (x[i] - xmin)))
+		l := nearestInt(iscale * (x[i] - xmin))
 		if l < 0 {
 			l = 0
 		}
@@ -198,7 +332,7 @@ func makeQKX2Quants(n, nmax int, x, weights []float32, L []uint8, theMin *float3
 		iscale = (rmin + rdelta*float32(is) + float32(nmax)) / (xmax - mn)
 		var sumL, sumL2, sumXL float32
 		for i := range n {
-			l := int(roundf(iscale * (x[i] - mn)))
+			l := nearestInt(iscale * (x[i] - mn))
 			if l < 0 {
 				l = 0
 			}
