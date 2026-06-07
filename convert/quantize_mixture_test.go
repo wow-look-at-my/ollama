@@ -111,18 +111,18 @@ func testFusedMixture(t *testing.T, exe string, tied bool) {
 
 	kv := ggml.KV{
 		"general.architecture":                   "llama",
-		"general.name":                            "synthetic",
-		"general.file_type":                       uint32(0),
-		"llama.block_count":                       uint32(nLayer),
-		"llama.context_length":                    uint32(2048),
-		"llama.embedding_length":                  uint32(nEmbd),
-		"llama.feed_forward_length":               uint32(nFF),
-		"llama.attention.head_count":              uint32(nHead),
-		"llama.attention.head_count_kv":           uint32(nHead),
-		"llama.attention.layer_norm_rms_epsilon":  float32(1e-5),
-		"llama.rope.dimension_count":              uint32(nEmbd / nHead),
-		"tokenizer.ggml.model":                    "llama",
-		"tokenizer.ggml.tokens":                   make([]string, nVocab),
+		"general.name":                           "synthetic",
+		"general.file_type":                      uint32(0),
+		"llama.block_count":                      uint32(nLayer),
+		"llama.context_length":                   uint32(2048),
+		"llama.embedding_length":                 uint32(nEmbd),
+		"llama.feed_forward_length":              uint32(nFF),
+		"llama.attention.head_count":             uint32(nHead),
+		"llama.attention.head_count_kv":          uint32(nHead),
+		"llama.attention.layer_norm_rms_epsilon": float32(1e-5),
+		"llama.rope.dimension_count":             uint32(nEmbd / nHead),
+		"tokenizer.ggml.model":                   "llama",
+		"tokenizer.ggml.tokens":                  make([]string, nVocab),
 	}
 
 	dir := t.TempDir()

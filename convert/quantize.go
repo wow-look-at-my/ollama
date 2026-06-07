@@ -12,7 +12,7 @@ const (
 	blockQ80 = 2 + qk80 // 34 bytes: FP16 scale + 32 x int8
 	qkK      = 256
 	kScaleSz = 12
-	blockQ4K = 2 + 2 + kScaleSz + qkK/2 // 144 bytes: 2xFP16 + 12 scales + 128 quants
+	blockQ4K = 2 + 2 + kScaleSz + qkK/2   // 144 bytes: 2xFP16 + 12 scales + 128 quants
 	blockQ6K = qkK/2 + qkK/4 + qkK/16 + 2 // 210 bytes: 128 ql + 64 qh + 16 int8 scales + FP16 d
 )
 
