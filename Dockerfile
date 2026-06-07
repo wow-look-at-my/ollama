@@ -229,6 +229,9 @@ RUN curl -fsSL https://golang.org/dl/go$(awk '/^go/ { print $2 }' go.mod).linux-
 ENV PATH=/usr/local/go/bin:$PATH
 RUN go mod download
 COPY . .
+# version.Version is stamped via the GOFLAGS -X ldflag, passed as a build-arg by
+# the build workflows (docker-build.yaml / release.yaml / scripts/push_docker.sh).
+# The default below leaves it at the 0.0.0 baked into version/version.go.
 ARG GOFLAGS="'-ldflags=-w -s'"
 ENV CGO_ENABLED=1
 ARG CGO_CFLAGS

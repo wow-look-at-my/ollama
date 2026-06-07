@@ -1509,21 +1509,15 @@ func GetModelInfo(req api.ShowRequest) (*api.ShowResponse, error) {
 		}
 	}
 
-	// For safetensors LLM models (experimental), populate details from config.json
-	if m.Config.ModelFormat == "safetensors" && slices.Contains(m.Config.Capabilities, "completion") {
-		if info, err := xserver.GetSafetensorsLLMInfo(name); err == nil {
-			if arch, ok := info["general.architecture"].(string); ok && arch != "" {
-				modelDetails.Family = arch
-			}
-			if paramCount, ok := info["general.parameter_count"].(int64); ok && paramCount > 0 {
-				modelDetails.ParameterSize = format.HumanNumber(uint64(paramCount))
-			}
-		}
-		// Older manifests may not have file_type populated for safetensors models.
-		if modelDetails.QuantizationLevel == "" {
-			if dtype, err := xserver.GetSafetensorsDtype(name); err == nil && dtype != "" {
-				modelDetails.QuantizationLevel = dtype
-			}
+	// Safetensors models (experimental) don't carry family/parameter metadata in
+	// their config blob, so derive it from config.json the same way GGUF models
+	// derive it from GGUF KV metadata. Also guarantees a non-nil Families slice.
+	finalizeModelDetails(name, &modelDetails)
+
+	// Older manifests may not have file_type populated for safetensors models.
+	if m.Config.ModelFormat == "safetensors" && modelDetails.QuantizationLevel == "" {
+		if dtype, err := xserver.GetSafetensorsDtype(name); err == nil && dtype != "" {
+			modelDetails.QuantizationLevel = dtype
 		}
 	}
 
@@ -2384,7 +2378,8 @@ func (s *Server) PsHandler(c *gin.Context) {
 		}
 
 		m := v.model
-		displayName := model.ParseName(m.ShortName).DisplayShortest()
+		name := model.ParseName(m.ShortName)
+		displayName := name.DisplayShortest()
 		modelDetails := api.ModelDetails{
 			Format:            m.Config.ModelFormat,
 			Family:            m.Config.ModelFamily,
@@ -2392,6 +2387,7 @@ func (s *Server) PsHandler(c *gin.Context) {
 			ParameterSize:     m.Config.ModelType,
 			QuantizationLevel: m.Config.FileType,
 		}
+		finalizeModelDetails(name, &modelDetails)
 
 		mr := api.ProcessModelResponse{
 			Model:     displayName,

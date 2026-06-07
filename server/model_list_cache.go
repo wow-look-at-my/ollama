@@ -329,7 +329,7 @@ func buildModelListSummary(name model.Name, mf *manifest.Manifest) (modelListSum
 		Details: api.ModelDetails{
 			Format:            cfg.ModelFormat,
 			Family:            cfg.ModelFamily,
-			Families:          append([]string(nil), cfg.ModelFamilies...),
+			Families:          cloneFamilies(cfg.ModelFamilies),
 			ParameterSize:     cfg.ModelType,
 			QuantizationLevel: cfg.FileType,
 			ContextLength:     cfg.ContextLen,
@@ -395,6 +395,11 @@ func buildModelListSummary(name model.Name, mf *manifest.Manifest) (modelListSum
 			return c == model.CapabilityVision || c == model.CapabilityAudio
 		})
 	}
+
+	// The safetensors create path doesn't write family/parameter metadata into
+	// the config blob, so derive it from config.json (the same metadata the GGUF
+	// path uses) and ensure Families is never nil.
+	finalizeModelDetails(name, &summary.Details)
 
 	return summary, nil
 }
@@ -785,7 +790,7 @@ func isUnknownQuantization(quantization string) bool {
 }
 
 func cloneModelListSummary(summary modelListSummary) modelListSummary {
-	summary.Details.Families = append([]string(nil), summary.Details.Families...)
+	summary.Details.Families = cloneFamilies(summary.Details.Families)
 	summary.Capabilities = append([]model.Capability(nil), summary.Capabilities...)
 	return summary
 }
@@ -803,7 +808,7 @@ func (s modelListSummary) ListModelResponse() api.ListModelResponse {
 			ParentModel:       s.Details.ParentModel,
 			Format:            s.Details.Format,
 			Family:            s.Details.Family,
-			Families:          append([]string(nil), s.Details.Families...),
+			Families:          cloneFamilies(s.Details.Families),
 			ParameterSize:     s.Details.ParameterSize,
 			QuantizationLevel: s.Details.QuantizationLevel,
 			ContextLength:     s.Details.ContextLength,
