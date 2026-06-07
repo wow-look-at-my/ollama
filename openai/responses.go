@@ -856,9 +856,9 @@ func ToResponse(model, responseID, itemID string, chatResponse api.ChatResponse,
 		Temperature:        derefFloat64(request.Temperature, 1.0),
 		Reasoning:          reasoning,
 		Usage: &ResponsesUsage{
-			InputTokens:  chatResponse.PromptEvalCount + chatResponse.PromptCacheCount,
-			OutputTokens: chatResponse.EvalCount,
-			TotalTokens:  chatResponse.PromptEvalCount + chatResponse.PromptCacheCount + chatResponse.EvalCount,
+			InputTokens:        chatResponse.PromptEvalCount + chatResponse.PromptCacheCount,
+			OutputTokens:       chatResponse.EvalCount,
+			TotalTokens:        chatResponse.PromptEvalCount + chatResponse.PromptCacheCount + chatResponse.EvalCount,
 			InputTokensDetails: ResponsesInputTokensDetails{CachedTokens: chatResponse.PromptCacheCount},
 			// TODO(drifkin): wire through the actual values
 			OutputTokensDetails: ResponsesOutputTokensDetails{ReasoningTokens: 0},
