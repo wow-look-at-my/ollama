@@ -813,9 +813,9 @@ func (m *gemma4AssistantModel) KV(baseKV ggml.KV) ggml.KV {
 	kv[p+"attention.key_length_swa"] = tc.HeadDim
 	kv[p+"attention.value_length_swa"] = tc.HeadDim
 	kv[p+"attention.layer_norm_rms_epsilon"] = tc.RMSNormEps
-	if tc.SlidingWindow > 0 {
-		kv[p+"attention.sliding_window"] = tc.SlidingWindow
-	}
+	// sliding_window is read as a required key by the gemma4_assistant loader
+	// (src/models/gemma4-assistant.cpp), so always emit it.
+	kv[p+"attention.sliding_window"] = tc.SlidingWindow
 	if tc.NumKVSharedLayers > 0 {
 		kv[p+"attention.shared_kv_layers"] = tc.NumKVSharedLayers
 	}
