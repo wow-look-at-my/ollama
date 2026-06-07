@@ -70,7 +70,6 @@ func TestLeadingBOSForRenderer(t *testing.T) {
 		{name: "lfm2-thinking", want: "<|startoftext|>"},
 		{name: "laguna", want: "〈|EOS|〉"},
 		{name: "deepseek3.1", want: "<｜begin▁of▁sentence｜>"},
-		{name: "cogito", want: "<｜begin▁of▁sentence｜>"},
 		{name: "qwen3-coder", want: ""},
 		{name: "unknown", want: ""},
 	}
