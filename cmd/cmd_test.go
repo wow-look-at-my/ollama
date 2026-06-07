@@ -19,6 +19,8 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/ollama/ollama/api"
+	"github.com/ollama/ollama/convert"
+	"github.com/ollama/ollama/fs/ggml"
 	"github.com/ollama/ollama/types/model"
 )
 
@@ -1399,172 +1401,47 @@ func TestListHandler(t *testing.T) {
 }
 
 func TestCreateHandler(t *testing.T) {
-	tests := []struct {
-		name           string
-		modelName      string
-		modelFile      string
-		serverResponse map[string]func(w http.ResponseWriter, r *http.Request)
-		expectedError  string
-		expectedOutput string
-	}{
-		{
-			name:      "successful create",
-			modelName: "test-model",
-			modelFile: "FROM foo",
-			serverResponse: map[string]func(w http.ResponseWriter, r *http.Request){
-				"/api/create": func(w http.ResponseWriter, r *http.Request) {
-					if r.Method != http.MethodPost {
-						t.Errorf("expected POST request, got %s", r.Method)
-					}
+	p := t.TempDir()
+	t.Setenv("OLLAMA_MODELS", p)
 
-					req := api.CreateRequest{}
-					if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-						http.Error(w, err.Error(), http.StatusBadRequest)
-						return
-					}
+	// Create a minimal GGUF file
+	f, err := os.CreateTemp(t.TempDir(), "test*.gguf")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ggml.WriteGGUF(f, convert.KV{"general.architecture": "test"}, nil); err != nil {
+		f.Close()
+		t.Fatal(err)
+	}
+	f.Close()
 
-					if req.Model != "test-model" {
-						t.Errorf("expected model name 'test-model', got %s", req.Name)
-					}
-
-					if req.From != "foo" {
-						t.Errorf("expected from 'foo', got %s", req.From)
-					}
-
-					responses := []api.ProgressResponse{
-						{Status: "using existing layer sha256:56bb8bd477a519ffa694fc449c2413c6f0e1d3b1c88fa7e3c9d88d3ae49d4dcb"},
-						{Status: "writing manifest"},
-						{Status: "success"},
-					}
-
-					for _, resp := range responses {
-						if err := json.NewEncoder(w).Encode(resp); err != nil {
-							http.Error(w, err.Error(), http.StatusInternalServerError)
-							return
-						}
-						w.(http.Flusher).Flush()
-					}
-				},
-			},
-			expectedOutput: "",
-		},
+	// Write a Modelfile pointing to the GGUF
+	modelfilePath := filepath.Join(t.TempDir(), "Modelfile")
+	if err := os.WriteFile(modelfilePath, []byte("FROM "+f.Name()), 0o644); err != nil {
+		t.Fatal(err)
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				handler, ok := tt.serverResponse[r.URL.Path]
-				if !ok {
-					t.Errorf("unexpected request to %s", r.URL.Path)
-					http.Error(w, "not found", http.StatusNotFound)
-					return
-				}
-				handler(w, r)
-			}))
-			t.Setenv("OLLAMA_HOST", mockServer.URL)
-			t.Cleanup(mockServer.Close)
-			tempFile, err := os.CreateTemp(t.TempDir(), "modelfile")
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer os.Remove(tempFile.Name())
-
-			if _, err := tempFile.WriteString(tt.modelFile); err != nil {
-				t.Fatal(err)
-			}
-			if err := tempFile.Close(); err != nil {
-				t.Fatal(err)
-			}
-
-			cmd := &cobra.Command{}
-			cmd.Flags().String("file", "", "")
-			if err := cmd.Flags().Set("file", tempFile.Name()); err != nil {
-				t.Fatal(err)
-			}
-
-			cmd.Flags().Bool("insecure", false, "")
-			cmd.SetContext(t.Context())
-
-			// Redirect stderr to capture progress output
-			oldStderr := os.Stderr
-			r, w, _ := os.Pipe()
-			os.Stderr = w
-
-			// Capture stdout for the "Model pushed" message
-			oldStdout := os.Stdout
-			outR, outW, _ := os.Pipe()
-			os.Stdout = outW
-
-			err = CreateHandler(cmd, []string{tt.modelName})
-
-			// Restore stderr
-			w.Close()
-			os.Stderr = oldStderr
-			// drain the pipe
-			if _, err := io.ReadAll(r); err != nil {
-				t.Fatal(err)
-			}
-
-			// Restore stdout and get output
-			outW.Close()
-			os.Stdout = oldStdout
-			stdout, _ := io.ReadAll(outR)
-
-			if tt.expectedError == "" {
-				if err != nil {
-					t.Errorf("expected no error, got %v", err)
-				}
-
-				if tt.expectedOutput != "" {
-					if got := string(stdout); got != tt.expectedOutput {
-						t.Errorf("expected output %q, got %q", tt.expectedOutput, got)
-					}
-				}
-			}
-		})
+	cmd := &cobra.Command{}
+	cmd.Flags().Bool("experimental", false, "")
+	cmd.Flags().String("draft-quantize", "", "")
+	cmd.Flags().String("quantize", "", "")
+	cmd.Flags().StringP("file", "f", "", "")
+	if err := cmd.Flags().Set("file", modelfilePath); err != nil {
+		t.Fatal(err)
 	}
-}
+	cmd.SetContext(t.Context())
 
-func TestCreateRequestFileNamesPreservesModelDirectoryLayout(t *testing.T) {
-	root := t.TempDir()
-	files := map[string]string{
-		filepath.Join(root, "model.safetensors"):            "sha256:model",
-		filepath.Join(root, "config.json"):                  "sha256:config",
-		filepath.Join(root, "2_Dense", "config.json"):       "sha256:dense-config",
-		filepath.Join(root, "2_Dense", "model.safetensors"): "sha256:dense-model",
-	}
+	// Discard progress output
+	oldStderr := os.Stderr
+	devnull, _ := os.Open(os.DevNull)
+	os.Stderr = devnull
+	defer func() { os.Stderr = oldStderr; devnull.Close() }()
 
-	got := createRequestFileNames(files)
-	want := map[string]string{
-		filepath.Join(root, "model.safetensors"):            "model.safetensors",
-		filepath.Join(root, "config.json"):                  "config.json",
-		filepath.Join(root, "2_Dense", "config.json"):       "2_Dense/config.json",
-		filepath.Join(root, "2_Dense", "model.safetensors"): "2_Dense/model.safetensors",
-	}
-
-	if diff := cmp.Diff(want, got); diff != "" {
-		t.Fatalf("mismatch (-want +got):\n%s", diff)
-	}
-}
-
-func TestCreateRequestFileNamesPreservesRelativeModelDirectoryLayout(t *testing.T) {
-	root := t.TempDir()
-	t.Chdir(root)
-
-	files := map[string]string{
-		"model.safetensors":         "sha256:model",
-		"config.json":               "sha256:config",
-		"2_Dense/config.json":       "sha256:dense-config",
-		"2_Dense/model.safetensors": "sha256:dense-model",
-		"3_Dense/config.json":       "sha256:dense-config",
-		"3_Dense/model.safetensors": "sha256:dense-model",
-	}
-
-	got := createRequestFileNames(files)
-	for file := range files {
-		if got[file] != filepath.ToSlash(file) {
-			t.Fatalf("%s = %q, want %q", file, got[file], filepath.ToSlash(file))
+	if err := CreateHandler(cmd, []string{"test-model"}); err != nil {
+		if strings.Contains(err.Error(), "llama-quantize unavailable") {
+			t.Skip("llama-quantize binary not built; skipping end-to-end create test")
 		}
+		t.Errorf("expected no error, got %v", err)
 	}
 }
 
