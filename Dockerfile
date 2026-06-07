@@ -266,14 +266,26 @@ RUN curl -fsSL https://golang.org/dl/go$(awk '/^go/ { print $2 }' go.mod).linux-
 ENV PATH=/usr/local/go/bin:$PATH
 RUN go mod download
 COPY . .
+# version.Version is derived at runtime from the VCS revision Go embeds in the
+# binary's build info (see version/version.go) — no -X ldflag, so the version
+# never changes the link inputs and the build cache survives across commits.
+# That requires .git in the build context (kept out of .dockerignore) and, since
+# COPY may not preserve ownership, git to treat the tree as a safe directory.
+# Release images still override version.Version with a semver tag via GOFLAGS.
 ARG GOFLAGS="'-ldflags=-w -s'"
 ENV CGO_ENABLED=1
 ARG CGO_CFLAGS
 ARG CGO_CXXFLAGS
 ENV CGO_CFLAGS="${CGO_CFLAGS}"
 ENV CGO_CXXFLAGS="${CGO_CXXFLAGS}"
+# .dockerignore drops some tracked paths (e.g. app/) from the context, so git
+# sees them as deleted and would stamp the build "-dirty". Restore just those
+# missing tracked files from the copied .git before building — genuine local
+# modifications are left untouched, so a real dirty tree still reads as dirty.
 RUN --mount=type=cache,target=/root/.cache/go-build \
-    go build -trimpath -buildmode=pie -o /bin/ollama .
+    git config --global --add safe.directory '*' \
+    && { git ls-files -d -z | xargs -0 -r git checkout -- 2>/dev/null || true; } \
+    && go build -trimpath -buildmode=pie -o /bin/ollama .
 
 FROM scratch AS publish-go
 COPY --from=build /bin/ollama /bin/ollama
