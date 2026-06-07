@@ -71,7 +71,7 @@ jobs:
       - name: Install tools
         run: |
           apt-get update -qq
-          apt-get install -y -qq git-lfs jq hyperfine
+          apt-get install -y -qq git-lfs jq hyperfine curl
 
       # ── Model cache ─────────────────────────────────────────────────────────
       - name: Cache Qwen2.5-0.5B safetensors
