@@ -591,20 +591,21 @@ type gemma4AssistantConfig struct {
 	CentroidIntermediateTopK uint32 `json:"centroid_intermediate_top_k"`
 	RequiresTargetArch       string `json:"requires_target_arch"`
 	TextConfig               struct {
-		NumHiddenLayers       uint32   `json:"num_hidden_layers"`
-		HiddenSize            uint32   `json:"hidden_size"`
-		NumAttentionHeads     uint32   `json:"num_attention_heads"`
-		NumKeyValueHeads      uint32   `json:"num_key_value_heads"`
-		HeadDim               uint32   `json:"head_dim"`
-		GlobalHeadDim         uint32   `json:"global_head_dim"`
-		IntermediateSize      uint32   `json:"intermediate_size"`
-		RMSNormEps            float32  `json:"rms_norm_eps"`
-		SlidingWindow         uint32   `json:"sliding_window"`
-		NumKVSharedLayers     uint32   `json:"num_kv_shared_layers"`
-		AttentionKEqV         bool     `json:"attention_k_eq_v"`
-		FinalLogitSoftcapping float32  `json:"final_logit_softcapping"`
-		LayerTypes            []string `json:"layer_types"`
-		RopeParameters        map[string]*struct {
+		NumHiddenLayers        uint32   `json:"num_hidden_layers"`
+		HiddenSize             uint32   `json:"hidden_size"`
+		NumAttentionHeads      uint32   `json:"num_attention_heads"`
+		NumKeyValueHeads       uint32   `json:"num_key_value_heads"`
+		NumGlobalKeyValueHeads *uint32  `json:"num_global_key_value_heads"`
+		HeadDim                uint32   `json:"head_dim"`
+		GlobalHeadDim          uint32   `json:"global_head_dim"`
+		IntermediateSize       uint32   `json:"intermediate_size"`
+		RMSNormEps             float32  `json:"rms_norm_eps"`
+		SlidingWindow          uint32   `json:"sliding_window"`
+		NumKVSharedLayers      uint32   `json:"num_kv_shared_layers"`
+		AttentionKEqV          bool     `json:"attention_k_eq_v"`
+		FinalLogitSoftcapping  float32  `json:"final_logit_softcapping"`
+		LayerTypes             []string `json:"layer_types"`
+		RopeParameters         map[string]*struct {
 			RopeTheta           float32  `json:"rope_theta"`
 			PartialRotaryFactor *float32 `json:"partial_rotary_factor"`
 		} `json:"rope_parameters"`
@@ -807,7 +808,23 @@ func (m *gemma4AssistantModel) KV(baseKV ggml.KV) ggml.KV {
 		kv[p+"feed_forward_length"] = tc.IntermediateSize
 	}
 	kv[p+"attention.head_count"] = tc.NumAttentionHeads
-	kv[p+"attention.head_count_kv"] = tc.NumKeyValueHeads
+	// Per-layer KV head count: SWA layers use num_key_value_heads, global
+	// (full-attention) layers use num_global_key_value_heads. Gemma 4 uses a
+	// different KV head count for the two attention types, so emit a per-layer
+	// array (mirrors the base gemma4 target converter) rather than a scalar.
+	if tc.NumGlobalKeyValueHeads != nil && *tc.NumGlobalKeyValueHeads != tc.NumKeyValueHeads && len(tc.LayerTypes) > 0 {
+		kvHeads := make([]int32, len(tc.LayerTypes))
+		for i, lt := range tc.LayerTypes {
+			if lt == "sliding_attention" {
+				kvHeads[i] = int32(tc.NumKeyValueHeads)
+			} else {
+				kvHeads[i] = int32(*tc.NumGlobalKeyValueHeads)
+			}
+		}
+		kv[p+"attention.head_count_kv"] = kvHeads
+	} else {
+		kv[p+"attention.head_count_kv"] = tc.NumKeyValueHeads
+	}
 	kv[p+"attention.key_length"] = tc.GlobalHeadDim
 	kv[p+"attention.value_length"] = tc.GlobalHeadDim
 	kv[p+"attention.key_length_swa"] = tc.HeadDim
@@ -836,6 +853,10 @@ func (m *gemma4AssistantModel) KV(baseKV ggml.KV) ggml.KV {
 	}
 	if rp, ok := tc.RopeParameters["sliding_attention"]; ok && rp != nil {
 		kv[p+"rope.freq_base_swa"] = rp.RopeTheta
+		// n_rot for SWA layers defaults to n_rot_full (the global head dim) in the
+		// loader (llama-model.cpp); the SWA q heads are head_dim-wide, so without
+		// this the drafter would rope global_head_dim dims on head_dim-wide heads.
+		kv[p+"rope.dimension_count_swa"] = tc.HeadDim
 	}
 
 	if tc.FinalLogitSoftcapping > 0 {

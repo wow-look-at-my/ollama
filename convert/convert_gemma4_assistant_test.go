@@ -93,21 +93,38 @@ func gemma4TestBaseKV(t *testing.T) ggml.KV {
 	return decodeGGUF(t, f).KV()
 }
 
-// gemma4AssistantLayerShapes adds the per-layer HF tensors for a 2-layer
-// assistant (n_embd=8, n_head=2, head_dim=4, n_ff=16) to shapes.
-func gemma4AssistantLayerShapes(shapes map[string][]int, layers int) {
-	for i := range layers {
+// gemma4AssistantLayerShapes adds the per-layer HF tensors for an assistant whose
+// layers are typed by layerTypes. Like Gemma 4, sliding-attention layers use a
+// smaller head_dim (4) than full-attention layers (global_head_dim 8), so the
+// attention tensors differ in size by layer type. n_embd=8, n_head=2, n_ff=16.
+// Each layer also carries a layer_scalar (-> layer_output_scale.weight), as the
+// real Gemma4AssistantForCausalLM checkpoint does.
+func gemma4AssistantLayerShapes(shapes map[string][]int, layerTypes []string) {
+	const (
+		nEmbd         = 8
+		nHead         = 2
+		headDim       = 4
+		globalHeadDim = 8
+		nFF           = 16
+	)
+	for i, lt := range layerTypes {
+		hd := headDim
+		if lt != "sliding_attention" {
+			hd = globalHeadDim
+		}
+		qOut := nHead * hd
 		p := fmt.Sprintf("model.layers.%d.", i)
-		shapes[p+"input_layernorm.weight"] = []int{8}
-		shapes[p+"self_attn.q_proj.weight"] = []int{8, 8}
-		shapes[p+"self_attn.q_norm.weight"] = []int{4}
-		shapes[p+"self_attn.o_proj.weight"] = []int{8, 8}
-		shapes[p+"post_attention_layernorm.weight"] = []int{8}
-		shapes[p+"pre_feedforward_layernorm.weight"] = []int{8}
-		shapes[p+"mlp.gate_proj.weight"] = []int{16, 8}
-		shapes[p+"mlp.up_proj.weight"] = []int{16, 8}
-		shapes[p+"mlp.down_proj.weight"] = []int{8, 16}
-		shapes[p+"post_feedforward_layernorm.weight"] = []int{8}
+		shapes[p+"input_layernorm.weight"] = []int{nEmbd}
+		shapes[p+"self_attn.q_proj.weight"] = []int{qOut, nEmbd}
+		shapes[p+"self_attn.q_norm.weight"] = []int{hd}
+		shapes[p+"self_attn.o_proj.weight"] = []int{nEmbd, qOut}
+		shapes[p+"post_attention_layernorm.weight"] = []int{nEmbd}
+		shapes[p+"pre_feedforward_layernorm.weight"] = []int{nEmbd}
+		shapes[p+"mlp.gate_proj.weight"] = []int{nFF, nEmbd}
+		shapes[p+"mlp.up_proj.weight"] = []int{nFF, nEmbd}
+		shapes[p+"mlp.down_proj.weight"] = []int{nEmbd, nFF}
+		shapes[p+"post_feedforward_layernorm.weight"] = []int{nEmbd}
+		shapes[p+"layer_scalar"] = []int{1}
 	}
 }
 
@@ -128,6 +145,9 @@ func decodeGGUF(t *testing.T, f *os.File) *ggml.GGML {
 func TestConvertGemma4MTPDraft(t *testing.T) {
 	dir := t.TempDir()
 
+	// Mirrors google/gemma-4-31B-it-assistant: distinct local/global head dims
+	// (head_dim 4 vs global_head_dim 8) and distinct KV head counts
+	// (num_key_value_heads 2 sliding vs num_global_key_value_heads 1 global).
 	config := `{
   "architectures": ["Gemma4AssistantForCausalLM"],
   "use_ordered_embeddings": false,
@@ -136,12 +156,15 @@ func TestConvertGemma4MTPDraft(t *testing.T) {
     "num_hidden_layers": 2,
     "hidden_size": 8,
     "num_attention_heads": 2,
-    "num_key_value_heads": 1,
+    "num_key_value_heads": 2,
+    "num_global_key_value_heads": 1,
     "head_dim": 4,
-    "global_head_dim": 4,
+    "global_head_dim": 8,
     "intermediate_size": 16,
     "rms_norm_eps": 1e-6,
     "sliding_window": 4,
+    "num_kv_shared_layers": 2,
+    "attention_k_eq_v": true,
     "layer_types": ["sliding_attention", "full_attention"],
     "rope_parameters": {
       "full_attention": {"rope_theta": 1000000.0, "partial_rotary_factor": 0.25},
@@ -156,7 +179,7 @@ func TestConvertGemma4MTPDraft(t *testing.T) {
 		"model.embed_tokens.weight": {16, 8},
 		"model.norm.weight":         {8},
 	}
-	gemma4AssistantLayerShapes(shapes, 2)
+	gemma4AssistantLayerShapes(shapes, []string{"sliding_attention", "full_attention"})
 	writeGemma4AssistantFixture(t, dir, config, shapes)
 
 	out, err := os.CreateTemp(t.TempDir(), "assistant")
@@ -197,6 +220,28 @@ func TestConvertGemma4MTPDraft(t *testing.T) {
 		t.Errorf("stale gemma4.* key present: gemma4.embedding_length = %v", v)
 	}
 
+	// Head dims: global (full-attention) vs SWA (sliding) differ.
+	if got := kv.Uint("attention.key_length"); got != 8 {
+		t.Errorf("key_length = %d, want 8 (global_head_dim)", got)
+	}
+	if got := kv.Uint("attention.key_length_swa"); got != 4 {
+		t.Errorf("key_length_swa = %d, want 4 (head_dim)", got)
+	}
+	if got := kv.Uint("rope.dimension_count"); got != 8 {
+		t.Errorf("rope.dimension_count = %d, want 8 (global_head_dim)", got)
+	}
+	// rope.dimension_count_swa must be emitted: the loader defaults n_rot_swa to
+	// n_rot_full (the global head dim), which would rope too many dims on the
+	// narrower SWA heads. See llama-model.cpp / gemma4-assistant.cpp.
+	if got := kv.Uint("rope.dimension_count_swa"); got != 4 {
+		t.Errorf("rope.dimension_count_swa = %d, want 4 (head_dim)", got)
+	}
+	// Per-layer KV head count: sliding layer = num_key_value_heads (2), full
+	// (global) layer = num_global_key_value_heads (1). Gemma 4 differs by type.
+	if got := kv.Ints("attention.head_count_kv"); !slices.Equal(got, []int32{2, 1}) {
+		t.Errorf("head_count_kv = %v, want [2 1]", got)
+	}
+
 	byName := map[string][]uint64{}
 	for _, tns := range decoded.Tensors().Items() {
 		byName[tns.Name] = tns.Shape
@@ -204,15 +249,18 @@ func TestConvertGemma4MTPDraft(t *testing.T) {
 
 	// GGUF ne order = reversed HF order.
 	shapeChecks := map[string][]uint64{
-		"token_embd.weight":          {8, 16},
-		"mtp.pre_projection.weight":  {16, 8},
-		"mtp.post_projection.weight": {8, 8},
-		"output_norm.weight":         {8},
-		"blk.0.attn_q.weight":        {8, 8},
-		"blk.0.attn_q_norm.weight":   {4},
-		"blk.0.ffn_gate.weight":      {8, 16},
-		"blk.0.ffn_down.weight":      {16, 8},
-		"rope_freqs.weight":          {2},
+		"token_embd.weight":               {8, 16},
+		"mtp.pre_projection.weight":       {16, 8},
+		"mtp.post_projection.weight":      {8, 8},
+		"output_norm.weight":              {8},
+		"blk.0.attn_q.weight":             {8, 8},  // sliding: n_head*head_dim = 2*4
+		"blk.0.attn_q_norm.weight":        {4},     // head_dim
+		"blk.1.attn_q.weight":             {8, 16}, // full: n_head*global_head_dim = 2*8
+		"blk.1.attn_q_norm.weight":        {8},     // global_head_dim
+		"blk.0.ffn_gate.weight":           {8, 16},
+		"blk.0.ffn_down.weight":           {16, 8},
+		"blk.0.layer_output_scale.weight": {1},
+		"rope_freqs.weight":               {4}, // global_head_dim/2
 	}
 	for name, want := range shapeChecks {
 		got, ok := byName[name]
@@ -233,6 +281,7 @@ func TestConvertGemma4MTPDraft(t *testing.T) {
 		for _, s := range []string{
 			"attn_norm", "attn_q", "attn_output", "attn_q_norm", "post_attention_norm",
 			"ffn_norm", "ffn_gate", "ffn_up", "ffn_down", "post_ffw_norm",
+			"layer_output_scale",
 		} {
 			required = append(required, fmt.Sprintf("blk.%d.%s.weight", i, s))
 		}
@@ -252,9 +301,9 @@ func TestConvertGemma4MTPDraft(t *testing.T) {
 		}
 	}
 
-	// 4 global + 1 rope_freqs + 2 layers x 10 = 25
-	if got := len(byName); got != 25 {
-		t.Errorf("tensor count = %d, want 25", got)
+	// 4 global + 1 rope_freqs + 2 layers x 11 (incl. layer_output_scale) = 27
+	if got := len(byName); got != 27 {
+		t.Errorf("tensor count = %d, want 27", got)
 	}
 }
 
@@ -293,7 +342,7 @@ func TestConvertGemma4MTPDraftOrderedEmbeddings(t *testing.T) {
     "num_attention_heads": 2,
     "num_key_value_heads": 1,
     "head_dim": 4,
-    "global_head_dim": 4,
+    "global_head_dim": 8,
     "intermediate_size": 16,
     "rms_norm_eps": 1e-6,
     "sliding_window": 4,
@@ -313,7 +362,7 @@ func TestConvertGemma4MTPDraftOrderedEmbeddings(t *testing.T) {
 		"masked_embedding.centroids.weight":      {4, 8},
 		"masked_embedding.token_ordering.weight": {16},
 	}
-	gemma4AssistantLayerShapes(shapes, 2)
+	gemma4AssistantLayerShapes(shapes, []string{"sliding_attention", "full_attention"})
 	writeGemma4AssistantFixture(t, dir, config, shapes)
 
 	out, err := os.CreateTemp(t.TempDir(), "assistant")
