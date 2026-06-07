@@ -75,6 +75,11 @@ type LlamaServer interface {
 	GetDeviceInfos(ctx context.Context) []ml.DeviceInfo
 	HasExited() bool
 	ContextLength() int
+	// LoadProgress reports the most recent model-load fraction in [0,1] parsed
+	// from llama-server's /health endpoint while the model loads into memory.
+	// It is 0 before any progress is observed and 1 once the server is ready.
+	// Used by the scheduler's /api/ps handler to surface real load progress.
+	LoadProgress() float32
 }
 
 type LlamaServerConfig struct {
@@ -152,11 +157,6 @@ func (s ServerStatus) String() string {
 	default:
 		return "llm server error"
 	}
-}
-
-type ServerStatusResponse struct {
-	Status   ServerStatus `json:"status"`
-	Progress float32      `json:"progress"`
 }
 
 // Request/Response types

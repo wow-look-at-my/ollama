@@ -422,6 +422,12 @@ func (s *Server) ContextLength() int {
 	return 0
 }
 
+// LoadProgress reports model-load progress. The imagegen runner loads
+// synchronously and does not expose an incremental fraction, so this is always 0.
+func (s *Server) LoadProgress() float32 {
+	return 0
+}
+
 // Embedding returns embeddings for the input.
 func (s *Server) Embedding(ctx context.Context, input string) ([]float32, int, error) {
 	return nil, 0, errors.New("embeddings not supported for MLX models")

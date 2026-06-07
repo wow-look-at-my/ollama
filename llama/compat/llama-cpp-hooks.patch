@@ -1,5 +1,5 @@
 diff --git a/src/llama-model-loader.cpp b/src/llama-model-loader.cpp
-index 4e65a45..a6e4fe2 100644
+index c645d07..a4d565d 100644
 --- a/src/llama-model-loader.cpp
 +++ b/src/llama-model-loader.cpp
 @@ -4,6 +4,7 @@
@@ -38,7 +38,7 @@ index 4e65a45..a6e4fe2 100644
              // make sure there is no duplicated tensor names
              if (weights_map.find(tensor_name) != weights_map.end()) {
                  throw std::runtime_error(format("invalid model: tensor '%s' is duplicated", ggml_get_name(cur)));
-@@ -1375,6 +1383,7 @@ void llama_model_loader::get_mapping_range(size_t * first, size_t * last, void *
+@@ -1382,6 +1390,7 @@ void llama_model_loader::get_mapping_range(size_t * first, size_t * last, void *
  
  void llama_model_loader::load_data_for(struct ggml_tensor * cur) const {
      const auto & w = require_weight(ggml_get_name(cur));
@@ -46,7 +46,7 @@ index 4e65a45..a6e4fe2 100644
  
      if (use_mmap) {
          const auto & mapping = mappings.at(w.idx);
-@@ -1525,6 +1534,7 @@ bool llama_model_loader::load_all_data(
+@@ -1532,6 +1541,7 @@ bool llama_model_loader::load_all_data(
          }
  
          size_t n_size = ggml_nbytes(cur);
@@ -55,7 +55,7 @@ index 4e65a45..a6e4fe2 100644
          if (use_mmap) {
              const auto & mapping = mappings.at(weight->idx);
 diff --git a/tools/mtmd/clip.cpp b/tools/mtmd/clip.cpp
-index 2e0cfa6..a0f2955 100644
+index 7bb702b..c74d50e 100644
 --- a/tools/mtmd/clip.cpp
 +++ b/tools/mtmd/clip.cpp
 @@ -10,6 +10,8 @@
@@ -67,7 +67,7 @@ index 2e0cfa6..a0f2955 100644
  #include <algorithm>
  #include <cassert>
  #include <cmath>
-@@ -1009,6 +1011,11 @@ struct clip_model_loader {
+@@ -1023,6 +1025,11 @@ struct clip_model_loader {
  
          ctx_meta.reset(meta);
  
@@ -79,7 +79,7 @@ index 2e0cfa6..a0f2955 100644
          const int n_tensors = gguf_get_n_tensors(ctx_gguf.get());
  
          // print gguf info
-@@ -2611,6 +2618,7 @@ struct clip_model_loader {
+@@ -2632,6 +2639,7 @@ struct clip_model_loader {
                  auto it_off = tensor_offset.find(t->name);
                  GGML_ASSERT(it_off != tensor_offset.end() && "no offset for tensor");
                  const size_t offset = it_off->second;
