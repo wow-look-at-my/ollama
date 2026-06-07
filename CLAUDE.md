@@ -98,6 +98,29 @@ architecture: `gemma4` → `convert.ConvertGemma4MTPDraft` (emits a standalone
 > tensors (`done_getting_tensors: wrong number of tensors`). Keep the drafter
 > separate.
 
+### quantize path (fused single-pass)
+`ollama create --quantize` quantizes the target **during conversion** for
+supported types (`Q4_K_M`, `Q8_0`): `convertFromSafetensors` calls
+`convert.ConvertModelQuantized`, which mmaps the safetensors, quantizes each
+tensor, and writes the final GGUF directly — no full-precision intermediate and
+no separate `llama-quantize` subprocess. `createModel` sees the layer is already
+the requested type and skips the llama-quantize rewrite. This is the fast path;
+it avoids materializing a ~2-bytes/param intermediate and re-reading it.
+
+The Go kernels (`convert/quantize.go`) and the per-tensor k-quant **mixture**
+(`convert/quantize_mixture.go`, a port of llama.cpp's `llama_tensor_get_type`,
+including the `weight_name_comparer` ordering and `use_more_bits`) are
+**byte-for-byte identical** to `llama-quantize` — proven by
+`TestQuantizeMatchesGGML` (kernels vs `quantize_row_*_ref`) and
+`TestFusedMixtureMatchesLlamaQuantize` (mixture vs the real binary). Anything not
+fusable (other types like `Q4_K_S` that need Q5_K, multimodal projector splits,
+non-safetensor tensor sources) returns `convert.ErrFusedUnsupported` and falls
+back to the convert-then-`llama-quantize` path. `nearestInt` (ggml's
+round-half-to-even) is mandatory for the K-quants — `math.Round` silently
+diverges. To run the bit-identical tests, build the llama.cpp fork's ggml and
+point `OLLAMA_GGML_LIB_DIR`/`_SRC_DIR`/`_INC_DIR` (kernels) and
+`OLLAMA_LLAMA_QUANTIZE` (mixture) at it.
+
 ### Historical note (superseded)
 Earlier sessions implemented MTP in the now-deleted Go runner (ForwardMTP /
 MTPDraft / runMTPCycle, draft `draft.*` tensors embedded in one GGUF) and recorded
@@ -111,7 +134,12 @@ the current design.
 - `scripts/build-gemma4-mtp.sh` — one-command build (HF download + Modelfile + `ollama create`)
 - `convert/convert_gemma4.go` — `ConvertGemma4MTPDraft` (+ `gemma4AssistantModel`): standalone `gemma4_assistant` drafter GGUF
 - `convert/convert_gemma4_assistant_test.go` — converter unit tests (synthetic fixtures)
-- `server/create.go` — `convertMTPDraftFromSafetensors` dispatch (gemma4 vs qwen)
+- `convert/quantize.go` — fused Go quant kernels (Q8_0/Q4_K/Q6_K, `nearestInt`)
+- `convert/quantize_mixture.go` — `ConvertModelQuantized` driver + the k-quant type mixture + `ErrFusedUnsupported`
+- `convert/quantize_hash_test.go`, `convert/quantize_mixture_test.go` — bit-identical kernel + mixture validation vs llama-quantize
+- `convert/convert.go` — `convertModel` shared core (full-precision vs fused)
+- `server/create.go` — `convertMTPDraftFromSafetensors` dispatch (gemma4 vs qwen); fused-quantize wiring in `convertFromSafetensors`
+- `server/quantization.go` — `llama-quantize` fallback path + clean progress capture
 - `llm/llama_server.go` — `gemma4_assistant` draft detection, `--mtp-head` / `--spec-type gemma4-mtp`
 - llama.cpp fork: `src/models/gemma4-assistant.cpp`, `src/llama-arch.cpp` (arch + `mtp.*` tensors + `gemma4_assistant.*` KV)
 - `model/models/gemma4/*.go`, `convert/convert.go:ConvertModelWithDraft` — the superseded Go-engine/embedded path (dead code; do not extend)

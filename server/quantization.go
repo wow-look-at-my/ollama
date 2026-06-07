@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 
 	fsggml "github.com/ollama/ollama/fs/ggml"
 	"github.com/ollama/ollama/llm"
@@ -127,12 +128,19 @@ func runLlamaQuantizeCommand(in, out *os.File, orig *fsggml.GGML, newFileType fs
 	cmd := exec.Command(quantizeExe, args...)
 	cmd.Env = llamaQuantizeEnv(os.Environ(), hasEmbeddedCompatibilityTensors(orig))
 
-	// Parse progress from stdout
+	// llama-quantize writes its per-tensor "[ n/ total]" lines (and all other
+	// logging) to stderr. Capture both streams instead of letting them spill onto
+	// the terminal: raw lines interleaved with the caller's live progress bar
+	// corrupt the in-place redraw. We parse progress out of the captured output
+	// and route everything else to the debug log.
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return fmt.Errorf("failed to create stdout pipe: %w", err)
 	}
-	cmd.Stderr = os.Stderr
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		return fmt.Errorf("failed to create stderr pipe: %w", err)
+	}
 
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("failed to start llama-quantize: %w", err)
@@ -144,23 +152,41 @@ func runLlamaQuantizeCommand(in, out *os.File, orig *fsggml.GGML, newFileType fs
 		totalSize += t.Size()
 	}
 
-	var lastReported uint64
-	scanner := bufio.NewScanner(stdout)
-	for scanner.Scan() {
-		line := scanner.Text()
+	var (
+		mu           sync.Mutex
+		lastReported uint64
+	)
+	consume := func(line string) {
 		if matches := progressRegex.FindStringSubmatch(line); len(matches) == 3 {
 			current, _ := strconv.ParseUint(matches[1], 10, 64)
 			total, _ := strconv.ParseUint(matches[2], 10, 64)
 			if total > 0 && progressFn != nil {
 				// progressFn expects incremental byte deltas
+				mu.Lock()
 				done := totalSize * current / total
 				if done > lastReported {
 					progressFn(done - lastReported)
 					lastReported = done
 				}
+				mu.Unlock()
 			}
 		}
+		slog.Debug("llama-quantize", "line", line)
 	}
+
+	var wg sync.WaitGroup
+	for _, r := range []io.Reader{stdout, stderr} {
+		wg.Add(1)
+		go func(r io.Reader) {
+			defer wg.Done()
+			scanner := bufio.NewScanner(r)
+			scanner.Buffer(make([]byte, 0, 64<<10), 1<<20)
+			for scanner.Scan() {
+				consume(scanner.Text())
+			}
+		}(r)
+	}
+	wg.Wait()
 
 	if err := cmd.Wait(); err != nil {
 		return fmt.Errorf("llama-quantize failed: %w", err)

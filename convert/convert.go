@@ -414,6 +414,26 @@ func LoadModelMetadata(fsys fs.FS) (ModelKV, *Tokenizer, error) {
 // Supported input model formats include safetensors.
 // Supported input tokenizers files include tokenizer.json (preferred) and tokenizer.model.
 func ConvertModel(fsys fs.FS, f *os.File, progressFn func(current, total int), projectorFiles ...*os.File) error {
+	return convertModel(fsys, f, nil, progressFn, projectorFiles)
+}
+
+// ConvertModelQuantized converts safetensors straight to a quantized GGUF in a
+// single streaming pass (decode -> quantize -> write), avoiding both the
+// full-precision intermediate file and a separate llama-quantize process. The
+// per-tensor type mixture and the block kernels are byte-for-byte identical to
+// llama-quantize (see convert/quantize_hash_test.go). It returns
+// ErrFusedUnsupported when it can't guarantee that match (unsupported quant
+// type/shape, multimodal projector split, or a non-safetensor tensor source),
+// so callers can fall back to llama-quantize.
+func ConvertModelQuantized(fsys fs.FS, f *os.File, fileType ggml.FileType, progressFn func(current, total int)) error {
+	return convertModel(fsys, f, &fileType, progressFn, nil)
+}
+
+// convertModel is the shared core of ConvertModel and ConvertModelQuantized.
+// When quantize is non-nil the gathered tensors are quantized in place before
+// writing; multimodal models (which split a projector into a second file) are
+// not supported in that mode and yield ErrFusedUnsupported.
+func convertModel(fsys fs.FS, f *os.File, quantize *ggml.FileType, progressFn func(current, total int), projectorFiles []*os.File) error {
 	kv, t, err := LoadModelMetadata(fsys)
 	if err != nil {
 		return err
@@ -440,13 +460,18 @@ func ConvertModel(fsys fs.FS, f *os.File, progressFn func(current, total int), p
 		return err
 	}
 
-	if mc, ok := conv.(MultimodalConverter); ok && len(projectorFiles) > 0 && projectorFiles[0] != nil {
-		projectorTensors := mc.ProjectorTensors(ts)
-		if len(projectorTensors) > 0 {
-			if err := writeFile(f, mc.TextKV(t), mc.TextTensors(ts, t), progressFn); err != nil {
-				return err
+	if mc, ok := conv.(MultimodalConverter); ok {
+		if projectorTensors := mc.ProjectorTensors(ts); len(projectorTensors) > 0 {
+			if quantize != nil {
+				// the fused quantizer writes a single file; it can't also split a projector
+				return ErrFusedUnsupported
 			}
-			return writeFile(projectorFiles[0], mc.ProjectorKV(t), projectorTensors)
+			if len(projectorFiles) > 0 && projectorFiles[0] != nil {
+				if err := writeFile(f, mc.TextKV(t), mc.TextTensors(ts, t), progressFn); err != nil {
+					return err
+				}
+				return writeFile(projectorFiles[0], mc.ProjectorKV(t), projectorTensors)
+			}
 		}
 	}
 
@@ -457,7 +482,14 @@ func ConvertModel(fsys fs.FS, f *os.File, progressFn func(current, total int), p
 		tensors = conv.Tensors(ts)
 	}
 
-	return writeFile(f, conv.KV(t), tensors, progressFn)
+	outKV := conv.KV(t)
+	if quantize != nil {
+		if err := applyFusedQuantization(tensors, outKV, *quantize); err != nil {
+			return err
+		}
+	}
+
+	return writeFile(f, outKV, tensors, progressFn)
 }
 
 func ensureUniqueTensorNames(ts []Tensor) error {

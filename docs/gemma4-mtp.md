@@ -76,6 +76,16 @@ If you'd rather not use the script:
    Add `--draft-quantize <level>` to quantize the drafter too (it is small, so
    this is optional).
 
+   For supported quant types (`Q4_K_M` and `Q8_0`) the target is quantized
+   **during conversion in a single streaming pass** — the safetensors are
+   mmapped, quantized, and written straight to the final GGUF, with no
+   full-precision intermediate file and no separate `llama-quantize` process. The
+   output is byte-for-byte identical to running `llama-quantize` (the block
+   kernels and the per-tensor k-quant mixture are validated against it). Other
+   types (e.g. `Q4_K_S`, which the mixture would route partly through Q5_K) and
+   multimodal models fall back to the old convert-then-`llama-quantize` path
+   automatically.
+
 ## Verify
 
 MTP only helps at **temperature 0** (greedy), where it is mathematically

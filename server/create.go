@@ -191,7 +191,7 @@ func (s *Server) CreateHandler(c *gin.Context) {
 				}
 			}
 		} else if r.Files != nil {
-			baseLayers, err = convertModelFromFiles(r.Files, baseLayers, false, fn)
+			baseLayers, err = convertModelFromFiles(r.Files, baseLayers, false, strings.ToUpper(cmp.Or(r.Quantize, r.Quantization)), fn)
 			if err != nil {
 				for _, badReq := range []error{errNoFilesProvided, errOnlyGGUFSupported, errUnknownType} {
 					if errors.Is(err, badReq) {
@@ -229,7 +229,7 @@ func (s *Server) CreateHandler(c *gin.Context) {
 
 		var adapterLayers []*layerGGML
 		if !remote && r.Adapters != nil {
-			adapterLayers, err = convertModelFromFiles(r.Adapters, baseLayers, true, fn)
+			adapterLayers, err = convertModelFromFiles(r.Adapters, baseLayers, true, "", fn)
 			if err != nil {
 				for _, badReq := range []error{errNoFilesProvided, errOnlyOneAdapterSupported, errOnlyGGUFSupported, errUnknownType, errFilePath} {
 					if errors.Is(err, badReq) {
@@ -371,18 +371,22 @@ func remoteURL(raw string) (string, error) {
 	return u.String(), nil
 }
 
-func convertModelFromFiles(files map[string]string, baseLayers []*layerGGML, isAdapter bool, fn func(resp api.ProgressResponse)) ([]*layerGGML, error) {
-	return convertModelFromFilesWithMediaType(files, baseLayers, isAdapter, "", true, fn)
+// convertModelFromFiles converts a model. quantType, when set to a supported
+// type, lets the safetensors path quantize during conversion in a single pass
+// (see convertFromSafetensors); pass "" to convert at full precision.
+func convertModelFromFiles(files map[string]string, baseLayers []*layerGGML, isAdapter bool, quantType string, fn func(resp api.ProgressResponse)) ([]*layerGGML, error) {
+	return convertModelFromFilesWithMediaType(files, baseLayers, isAdapter, "", true, quantType, fn)
 }
 
 func convertDraftModelFromFiles(files map[string]string, baseLayers []*layerGGML, fn func(resp api.ProgressResponse)) ([]*layerGGML, error) {
-	return convertModelFromFilesWithMediaType(files, baseLayers, false, manifest.MediaTypeImageDraft, false, fn)
+	// drafts are quantized later via llama-quantize, not fused during conversion
+	return convertModelFromFilesWithMediaType(files, baseLayers, false, manifest.MediaTypeImageDraft, false, "", fn)
 }
 
-func convertModelFromFilesWithMediaType(files map[string]string, baseLayers []*layerGGML, isAdapter bool, mediaType string, detectTemplate bool, fn func(resp api.ProgressResponse)) ([]*layerGGML, error) {
+func convertModelFromFilesWithMediaType(files map[string]string, baseLayers []*layerGGML, isAdapter bool, mediaType string, detectTemplate bool, quantType string, fn func(resp api.ProgressResponse)) ([]*layerGGML, error) {
 	switch detectModelTypeFromFiles(files) {
 	case "safetensors":
-		layers, err := convertFromSafetensors(files, baseLayers, isAdapter, mediaType, detectTemplate, fn)
+		layers, err := convertFromSafetensors(files, baseLayers, isAdapter, mediaType, detectTemplate, quantType, fn)
 		if err != nil {
 			slog.Error("error converting from safetensors", "error", err)
 			return nil, err
@@ -478,7 +482,7 @@ func detectModelTypeFromFiles(files map[string]string) string {
 	return ""
 }
 
-func convertFromSafetensors(files map[string]string, baseLayers []*layerGGML, isAdapter bool, mediaType string, detectTemplate bool, fn func(resp api.ProgressResponse)) ([]*layerGGML, error) {
+func convertFromSafetensors(files map[string]string, baseLayers []*layerGGML, isAdapter bool, mediaType string, detectTemplate bool, quantType string, fn func(resp api.ProgressResponse)) ([]*layerGGML, error) {
 	tmpDir, err := os.MkdirTemp(envconfig.Models(), "ollama-safetensors")
 	if err != nil {
 		return nil, err
@@ -532,10 +536,40 @@ func convertFromSafetensors(files map[string]string, baseLayers []*layerGGML, is
 				return nil, err
 			}
 		} else {
-			if err := convert.ConvertModel(os.DirFS(tmpDir), t, func(current, total int) {
-				fn(api.ProgressResponse{Status: "converting model", Total: int64(total), Completed: int64(current)})
-			}, projFile); err != nil {
-				return nil, err
+			// When a supported quantization is requested, quantize during
+			// conversion in a single streaming pass (byte-for-byte identical to
+			// llama-quantize) instead of writing a full-precision intermediate and
+			// shelling out to llama-quantize afterwards. Fall back to a
+			// full-precision conversion when the model/type isn't fusable.
+			converted := false
+			if quantType != "" {
+				if ft, err := ggml.ParseFileType(quantType); err == nil {
+					status := fmt.Sprintf("quantizing model to %s", ft)
+					err := convert.ConvertModelQuantized(os.DirFS(tmpDir), t, ft, func(current, total int) {
+						fn(api.ProgressResponse{Status: status, Total: int64(total), Completed: int64(current)})
+					})
+					switch {
+					case err == nil:
+						converted = true
+					case errors.Is(err, convert.ErrFusedUnsupported):
+						// reset the output file and fall back to a full-precision conversion
+						if _, err := t.Seek(0, io.SeekStart); err != nil {
+							return nil, err
+						}
+						if err := t.Truncate(0); err != nil {
+							return nil, err
+						}
+					default:
+						return nil, err
+					}
+				}
+			}
+			if !converted {
+				if err := convert.ConvertModel(os.DirFS(tmpDir), t, func(current, total int) {
+					fn(api.ProgressResponse{Status: "converting model", Total: int64(total), Completed: int64(current)})
+				}, projFile); err != nil {
+					return nil, err
+				}
 			}
 		}
 	} else {
@@ -733,6 +767,10 @@ func createModel(r api.CreateRequest, name model.Name, baseLayers []*layerGGML, 
 
 				if layer.MediaType == manifest.MediaTypeImageDraft && ft.ToTensorType().IsQuantized() {
 					return fmt.Errorf("draft quantization requires an unquantized draft model, got %s", ft)
+				} else if ft == want {
+					// already quantized to the requested type during conversion
+					// (fused single-pass path); skip the llama-quantize rewrite
+					rewroteLayer = true
 				} else if !slices.Contains([]string{"F16", "BF16", "F32"}, ft.String()) {
 					return errors.New("quantization is only supported for F16, BF16 and F32 models")
 				} else if ft != want {
@@ -903,7 +941,7 @@ func CreateDirect(ctx context.Context, r api.CreateRequest, fn func(api.Progress
 	case r.From != "":
 		baseLayers, err = parseFromModel(ctx, model.ParseName(r.From), fn)
 	case r.Files != nil:
-		baseLayers, err = convertModelFromFiles(r.Files, baseLayers, false, fn)
+		baseLayers, err = convertModelFromFiles(r.Files, baseLayers, false, strings.ToUpper(cmp.Or(r.Quantize, r.Quantization)), fn)
 	default:
 		err = errNeitherFromOrFiles
 	}
@@ -920,7 +958,7 @@ func CreateDirect(ctx context.Context, r api.CreateRequest, fn func(api.Progress
 	}
 
 	if r.Adapters != nil {
-		adapterLayers, err := convertModelFromFiles(r.Adapters, baseLayers, true, fn)
+		adapterLayers, err := convertModelFromFiles(r.Adapters, baseLayers, true, "", fn)
 		if err != nil {
 			return err
 		}
