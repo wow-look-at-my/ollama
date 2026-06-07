@@ -1438,6 +1438,9 @@ func TestCreateHandler(t *testing.T) {
 	defer func() { os.Stderr = oldStderr; devnull.Close() }()
 
 	if err := CreateHandler(cmd, []string{"test-model"}); err != nil {
+		if strings.Contains(err.Error(), "llama-quantize unavailable") {
+			t.Skip("llama-quantize binary not built; skipping end-to-end create test")
+		}
 		t.Errorf("expected no error, got %v", err)
 	}
 }
