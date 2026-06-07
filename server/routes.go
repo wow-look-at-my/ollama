@@ -2916,6 +2916,19 @@ func (s *Server) ChatHandler(c *gin.Context) {
 				ToolCallTag:     toolCallTagForCompletion(toolParser),
 				LeadingBOS:      leadingBOSForModel(m),
 			}, func(r llm.CompletionResponse) {
+				// Prefill progress arrives before any content; forward it as a
+				// content-less response so the OpenAI/native stream can surface a
+				// prompt-processing progress bar, then wait for real tokens.
+				if r.PromptProgress != nil {
+					ch <- api.ChatResponse{
+						Model:          req.Model,
+						CreatedAt:      time.Now().UTC(),
+						Message:        api.Message{Role: "assistant"},
+						PromptProgress: r.PromptProgress,
+					}
+					return
+				}
+
 				res := api.ChatResponse{
 					Model:     req.Model,
 					CreatedAt: time.Now().UTC(),

@@ -1171,6 +1171,7 @@ type llamaServerCompletionRequest struct {
 	JsonSchema      json.RawMessage `json:"json_schema,omitempty"`
 	NProbs          int             `json:"n_probs,omitempty"`
 	PreservedTokens []string        `json:"preserved_tokens,omitempty"`
+	ReturnProgress  bool            `json:"return_progress,omitempty"`
 }
 
 func llamaServerPreservedTokens(parserTokens []string, toolCallTag string) []string {
@@ -1236,6 +1237,17 @@ type llamaServerCompletionResponse struct {
 		PredictMS float64 `json:"predicted_ms"`
 	} `json:"timings"`
 	CompletionProbabilities []llamaServerTokenProb `json:"completion_probabilities"`
+	// PromptProgress is present on content-less chunks emitted during prefill when
+	// return_progress is set (Processed/Total is the overall fraction done).
+	PromptProgress *llamaServerPromptProgress `json:"prompt_progress"`
+}
+
+// llamaServerPromptProgress mirrors llama-server's prompt_progress object.
+type llamaServerPromptProgress struct {
+	Total     int   `json:"total"`
+	Cache     int   `json:"cache"`
+	Processed int   `json:"processed"`
+	TimeMS    int64 `json:"time_ms"`
 }
 
 type llamaServerChatChoice struct {
@@ -1331,6 +1343,10 @@ func (s *llamaServerRunner) Completion(ctx context.Context, req CompletionReques
 		TypicalP:        req.Options.TypicalP,
 		Seed:            req.Options.Seed,
 		PreservedTokens: llamaServerPreservedTokens(req.PreservedTokens, req.ToolCallTag),
+		// Ask llama-server to stream prompt-processing progress so callers can show
+		// a prefill progress bar on long prompts. The progress arrives as extra
+		// content-less chunks during prefill and is otherwise inert.
+		ReturnProgress: true,
 	}
 
 	if req.Logprobs {
@@ -1437,6 +1453,21 @@ func (s *llamaServerRunner) Completion(ctx context.Context, req CompletionReques
 			var lsResp llamaServerCompletionResponse
 			if err := json.Unmarshal(evt, &lsResp); err != nil {
 				return fmt.Errorf("error unmarshalling llama-server response: %v", err)
+			}
+
+			// Prefill progress chunks carry no content. Forward them and skip the
+			// token-repeat detection below, which would otherwise treat the empty
+			// content of many progress updates as a repeating token.
+			if lsResp.PromptProgress != nil && !lsResp.Stop {
+				fn(CompletionResponse{
+					PromptProgress: &api.PromptProgress{
+						Total:     lsResp.PromptProgress.Total,
+						Cache:     lsResp.PromptProgress.Cache,
+						Processed: lsResp.PromptProgress.Processed,
+						TimeMS:    lsResp.PromptProgress.TimeMS,
+					},
+				})
+				continue
 			}
 
 			// Token repeat detection
