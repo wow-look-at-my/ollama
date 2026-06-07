@@ -229,9 +229,12 @@ RUN curl -fsSL https://golang.org/dl/go$(awk '/^go/ { print $2 }' go.mod).linux-
 ENV PATH=/usr/local/go/bin:$PATH
 RUN go mod download
 COPY . .
-# version.Version is stamped via the GOFLAGS -X ldflag, passed as a build-arg by
-# the build workflows (docker-build.yaml / release.yaml / scripts/push_docker.sh).
-# The default below leaves it at the 0.0.0 baked into version/version.go.
+# version.Version is derived at runtime from the VCS revision Go embeds in the
+# binary's build info (see version/version.go) — no -X ldflag, so the version
+# never changes the link inputs and the build cache survives across commits.
+# That requires .git in the build context (kept out of .dockerignore) and, since
+# COPY may not preserve ownership, git to treat the tree as a safe directory.
+# Release images still override version.Version with a semver tag via GOFLAGS.
 ARG GOFLAGS="'-ldflags=-w -s'"
 ENV CGO_ENABLED=1
 ARG CGO_CFLAGS
@@ -239,7 +242,8 @@ ARG CGO_CXXFLAGS
 ENV CGO_CFLAGS="${CGO_CFLAGS}"
 ENV CGO_CXXFLAGS="${CGO_CXXFLAGS}"
 RUN --mount=type=cache,target=/root/.cache/go-build \
-    go build -trimpath -buildmode=pie -o /bin/ollama .
+    git config --global --add safe.directory '*' \
+    && go build -trimpath -buildmode=pie -o /bin/ollama .
 
 #
 # Assembly stages — combine llama-server variants + GPU runtime libs
