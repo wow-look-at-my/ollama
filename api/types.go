@@ -590,8 +590,13 @@ type Metrics struct {
 	LoadDuration       time.Duration `json:"load_duration,omitempty"`
 	PromptEvalCount    int           `json:"prompt_eval_count,omitempty"`
 	PromptEvalDuration time.Duration `json:"prompt_eval_duration,omitempty"`
-	EvalCount          int           `json:"eval_count,omitempty"`
-	EvalDuration       time.Duration `json:"eval_duration,omitempty"`
+	// PromptCacheCount is the number of prompt tokens that were reused from the
+	// KV cache (a cached prefix) instead of being evaluated. PromptEvalCount
+	// counts only the tokens actually processed, so the full prompt length is
+	// PromptEvalCount + PromptCacheCount.
+	PromptCacheCount int           `json:"prompt_cache_count,omitempty"`
+	EvalCount        int           `json:"eval_count,omitempty"`
+	EvalDuration     time.Duration `json:"eval_duration,omitempty"`
 }
 
 // Options specified in [GenerateRequest].  If you add a new option here, also
