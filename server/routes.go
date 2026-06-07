@@ -640,6 +640,7 @@ func (s *Server) GenerateHandler(c *gin.Context) {
 				Done:      cr.Done,
 				Metrics: api.Metrics{
 					PromptEvalCount:    cr.PromptEvalCount,
+					PromptCacheCount:   cr.PromptCacheCount,
 					PromptEvalDuration: cr.PromptEvalDuration,
 					EvalCount:          cr.EvalCount,
 					EvalDuration:       cr.EvalDuration,
@@ -2932,6 +2933,7 @@ func (s *Server) ChatHandler(c *gin.Context) {
 					Done:      r.Done,
 					Metrics: api.Metrics{
 						PromptEvalCount:    r.PromptEvalCount,
+						PromptCacheCount:   r.PromptCacheCount,
 						PromptEvalDuration: r.PromptEvalDuration,
 						EvalCount:          r.EvalCount,
 						EvalDuration:       r.EvalDuration,
@@ -3136,6 +3138,7 @@ func (s *Server) handleNativeChat(c *gin.Context, req api.ChatRequest, m *Model,
 				Done:      r.Done,
 				Metrics: api.Metrics{
 					PromptEvalCount:    r.PromptEvalCount,
+					PromptCacheCount:   r.PromptCacheCount,
 					PromptEvalDuration: r.PromptEvalDuration,
 					EvalCount:          r.EvalCount,
 					EvalDuration:       r.EvalDuration,
