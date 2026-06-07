@@ -58,14 +58,17 @@ func writeGemma4AssistantFixture(t *testing.T, dir, configJSON string, shapes ma
 	}
 }
 
-// gemma4TestBaseKV builds a synthetic converted-target KV: arch gemma4, an
-// embedding_length (the assistant's n_embd_backbone), and a 16-token tokenizer.
-func gemma4TestBaseKV() ggml.KV {
+// gemma4TestBaseKV builds a synthetic converted-target KV (arch gemma4, an
+// embedding_length = the assistant's n_embd_backbone, and a 16-token tokenizer)
+// and round-trips it through WriteGGUF/Decode so the accessors see the decoded
+// array types — exactly how production obtains baseKV from the base GGUF.
+func gemma4TestBaseKV(t *testing.T) ggml.KV {
+	t.Helper()
 	tokens := make([]string, 16)
 	for i := range tokens {
 		tokens[i] = fmt.Sprintf("tok%d", i)
 	}
-	return ggml.KV{
+	plain := ggml.KV{
 		"general.architecture":         "gemma4",
 		"general.quantization_version": uint32(2),
 		"gemma4.embedding_length":      uint32(8),
@@ -78,6 +81,16 @@ func gemma4TestBaseKV() ggml.KV {
 		"tokenizer.ggml.bos_token_id":  uint32(2),
 		"tokenizer.ggml.eos_token_id":  uint32(1),
 	}
+
+	f, err := os.CreateTemp(t.TempDir(), "base")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	if err := ggml.WriteGGUF(f, plain, nil); err != nil {
+		t.Fatal(err)
+	}
+	return decodeGGUF(t, f).KV()
 }
 
 // gemma4AssistantLayerShapes adds the per-layer HF tensors for a 2-layer
@@ -152,7 +165,7 @@ func TestConvertGemma4MTPDraft(t *testing.T) {
 	}
 	defer out.Close()
 
-	if err := ConvertGemma4MTPDraft(os.DirFS(dir), out, gemma4TestBaseKV()); err != nil {
+	if err := ConvertGemma4MTPDraft(os.DirFS(dir), out, gemma4TestBaseKV(t)); err != nil {
 		t.Fatal(err)
 	}
 
@@ -257,7 +270,7 @@ func TestConvertGemma4MTPDraftRejectsNonGemma4Base(t *testing.T) {
 	}
 	defer out.Close()
 
-	baseKV := gemma4TestBaseKV()
+	baseKV := gemma4TestBaseKV(t)
 	baseKV["general.architecture"] = "llama"
 
 	err = ConvertGemma4MTPDraft(os.DirFS(dir), out, baseKV)
@@ -293,11 +306,11 @@ func TestConvertGemma4MTPDraftOrderedEmbeddings(t *testing.T) {
 }`
 
 	shapes := map[string][]int{
-		"pre_projection.weight":              {8, 16},
-		"post_projection.weight":             {8, 8},
-		"model.embed_tokens.weight":          {16, 8},
-		"model.norm.weight":                  {8},
-		"masked_embedding.centroids.weight":  {4, 8},
+		"pre_projection.weight":                  {8, 16},
+		"post_projection.weight":                 {8, 8},
+		"model.embed_tokens.weight":              {16, 8},
+		"model.norm.weight":                      {8},
+		"masked_embedding.centroids.weight":      {4, 8},
 		"masked_embedding.token_ordering.weight": {16},
 	}
 	gemma4AssistantLayerShapes(shapes, 2)
@@ -309,7 +322,7 @@ func TestConvertGemma4MTPDraftOrderedEmbeddings(t *testing.T) {
 	}
 	defer out.Close()
 
-	if err := ConvertGemma4MTPDraft(os.DirFS(dir), out, gemma4TestBaseKV()); err != nil {
+	if err := ConvertGemma4MTPDraft(os.DirFS(dir), out, gemma4TestBaseKV(t)); err != nil {
 		t.Fatal(err)
 	}
 
