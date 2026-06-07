@@ -100,9 +100,6 @@ RUN --mount=type=cache,target=/root/.ccache \
                 [ -e "$lib" ] && cp -a "$lib" dist/lib/ollama/ || true; \
             done
 
-FROM scratch AS publish-llama-server-cpu
-COPY --from=llama-server-cpu dist/lib/ollama /lib/ollama/
-
 FROM cuda-12-deps AS llama-server-cuda_v12
 COPY LLAMA_CPP_VERSION .
 COPY llama/server llama/server
@@ -111,9 +108,6 @@ RUN --mount=type=cache,target=/root/.ccache \
     cmake -S llama/server --preset llama_cuda_v12_linux \
         && cmake --build build/llama-server-cuda_v12 -- -l $(nproc) \
         && cmake --install build/llama-server-cuda_v12 --component llama-server --strip
-
-FROM scratch AS publish-llama-server-cuda_v12
-COPY --from=llama-server-cuda_v12 dist/lib/ollama /lib/ollama/
 
 FROM cuda-13-deps AS llama-server-cuda_v13
 COPY LLAMA_CPP_VERSION .
@@ -128,9 +122,6 @@ RUN --mount=type=cache,target=/root/.ccache \
         && cmake --build build/llama-server-cuda_v13 -- -l $(nproc) \
         && cmake --install build/llama-server-cuda_v13 --component llama-server --strip
 
-FROM scratch AS publish-llama-server-cuda_v13
-COPY --from=llama-server-cuda_v13 dist/lib/ollama /lib/ollama/
-
 FROM rocm-7-deps AS llama-server-rocm_v7_2
 ENV CC=clang CXX=clang++
 COPY LLAMA_CPP_VERSION .
@@ -142,9 +133,6 @@ RUN --mount=type=cache,target=/root/.ccache \
         && cmake --install build/llama-server-rocm_v7_2 --component llama-server --strip
 RUN rm -f dist/lib/ollama/rocm_v7_2/rocblas/library/*gfx90[06]*
 
-FROM scratch AS publish-llama-server-rocm_v7_2
-COPY --from=llama-server-rocm_v7_2 dist/lib/ollama /lib/ollama/
-
 FROM vulkan-deps AS llama-server-vulkan
 COPY LLAMA_CPP_VERSION .
 COPY llama/server llama/server
@@ -153,9 +141,6 @@ RUN --mount=type=cache,target=/root/.ccache \
     cmake -S llama/server --preset vulkan \
         && cmake --build build/llama-server-vulkan -- -l $(nproc) \
         && cmake --install build/llama-server-vulkan --component llama-server --strip
-
-FROM scratch AS publish-llama-server-vulkan
-COPY --from=llama-server-vulkan dist/lib/ollama /lib/ollama/
 
 #
 # JetPack stages — self-contained with their own base images
@@ -178,9 +163,6 @@ RUN --mount=type=cache,target=/root/.ccache \
         && cmake --build build/llama-server-cuda_jetpack5 -- -l $(nproc) \
         && cmake --install build/llama-server-cuda_jetpack5 --component llama-server --strip
 
-FROM scratch AS publish-llama-server-cuda_jetpack5
-COPY --from=jetpack-5 dist/lib/ollama /lib/ollama/
-
 FROM --platform=linux/arm64 nvcr.io/nvidia/l4t-jetpack:${JETPACK6VERSION} AS jetpack-6
 ARG CMAKEVERSION
 ARG NINJAVERSION
@@ -197,9 +179,6 @@ RUN --mount=type=cache,target=/root/.ccache \
     cmake -S llama/server --preset llama_cuda_jetpack6 \
         && cmake --build build/llama-server-cuda_jetpack6 -- -l $(nproc) \
         && cmake --install build/llama-server-cuda_jetpack6 --component llama-server --strip
-
-FROM scratch AS publish-llama-server-cuda_jetpack6
-COPY --from=jetpack-6 dist/lib/ollama /lib/ollama/
 
 #
 # MLX stage
@@ -239,9 +218,6 @@ RUN --mount=type=cache,target=/root/.ccache \
     && cmake -S . -B build/mlx_cuda_v13 -DOLLAMA_MLX_BACKENDS=cuda_v13 -DBLAS_INCLUDE_DIRS=/usr/include/openblas -DLAPACK_INCLUDE_DIRS=/usr/include/openblas -DCMAKE_CUDA_FLAGS="-t ${OLLAMA_MLX_NVCC_THREADS}" ${MLX_CUDA_RAM_MB:+-DMLX_CUDA_RAM_MB=${MLX_CUDA_RAM_MB}} -DOLLAMA_PAYLOAD_INSTALL_PREFIX=/go/src/github.com/ollama/ollama/dist \
         && cmake --build build/mlx_cuda_v13 --target ollama-mlx-cuda_v13 -- -l $(nproc) ${OLLAMA_MLX_BUILD_JOBS:+-j ${OLLAMA_MLX_BUILD_JOBS}}
 
-FROM scratch AS publish-mlx
-COPY --from=mlx /go/src/github.com/ollama/ollama/dist/lib/ollama /lib/ollama/
-
 #
 # Go build
 #
@@ -273,9 +249,6 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
     git config --global --add safe.directory '*' \
     && { git ls-files -d -z | xargs -0 -r git checkout -- 2>/dev/null || true; } \
     && go build -trimpath -buildmode=pie -o /bin/ollama .
-
-FROM scratch AS publish-go
-COPY --from=build /bin/ollama /bin/ollama
 
 #
 # Assembly stages — combine llama-server variants + GPU runtime libs

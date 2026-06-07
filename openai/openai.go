@@ -460,16 +460,11 @@ func ToCompleteChunk(id string, r api.GenerateResponse) CompletionChunk {
 func ToListCompletion(r api.ListResponse) ListCompletion {
 	var data []Model
 	for _, m := range r.Models {
-		id := m.Model
-		if id == "" {
-			id = m.Name
-		}
-
 		data = append(data, Model{
-			Id:      id,
+			Id:      m.Name,
 			Object:  "model",
 			Created: m.ModifiedAt.Unix(),
-			OwnedBy: model.ParseName(id).Namespace,
+			OwnedBy: model.ParseName(m.Name).Namespace,
 		})
 	}
 
