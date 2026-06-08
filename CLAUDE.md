@@ -121,6 +121,24 @@ diverges. To run the bit-identical tests, build the llama.cpp fork's ggml and
 point `OLLAMA_GGML_LIB_DIR`/`_SRC_DIR`/`_INC_DIR` (kernels) and
 `OLLAMA_LLAMA_QUANTIZE` (mixture) at it.
 
+### create input hashing (source mode)
+ollama content-addresses inputs by sha256, so historically `ollama create`
+hashed every safetensors file **up front** (`parser.CreateRequest` →
+`fileDigestMap`) before conversion — a full read of the model shown as
+"gathering model components", ~1.5 min for a 31B target. That digest is only
+used to stage the input blob and is never referenced after conversion.
+
+For **local** create (`cmd.go` → `server.CreateDirect`, `sourceMode=true`) of
+safetensors, hashing is now deferred and overlapped: `cmd.go` enumerates the
+files without hashing (`CreateRequest(dir, false)`) and passes their source
+paths; `convertFromSafetensors` links them in and hashes each read-only mmap in
+a goroutine (`server/blobhash_unix.go:sha256FileMmap`) that runs **concurrently
+with `WriteGGUF`'s quantize pass** (shared OS page cache), then stages the blobs
+via `EnsureBlobFromPath` afterwards. The digest is still computed and inputs
+still land in the blob store, but the hash hides behind the conversion instead
+of blocking before it. The remote/HTTP path (`CreateHandler`, `sourceMode=false`)
+and GGUF imports keep the up-front content-addressed flow unchanged.
+
 ### Historical note (superseded)
 Earlier sessions implemented MTP in the now-deleted Go runner (ForwardMTP /
 MTPDraft / runMTPCycle, draft `draft.*` tensors embedded in one GGUF) and recorded
