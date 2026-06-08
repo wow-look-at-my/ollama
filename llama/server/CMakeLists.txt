@@ -111,7 +111,10 @@ endif()
 
 include(FetchContent)
 
-# Read pinned llama.cpp commit from version file (shared with Dockerfile)
+# Read pinned llama.cpp commit from version file (shared with Dockerfile).
+# CI rewrites this file to the resolved fork-master SHA before building (see
+# scripts/update-llamacpp-version.sh), so the value changes only when llama.cpp
+# moves — busting the Docker COPY layer cache exactly then and reusing it otherwise.
 file(READ "${CMAKE_CURRENT_SOURCE_DIR}/../../LLAMA_CPP_VERSION" LLAMA_CPP_GIT_TAG)
 string(STRIP "${LLAMA_CPP_GIT_TAG}" LLAMA_CPP_GIT_TAG)
 
