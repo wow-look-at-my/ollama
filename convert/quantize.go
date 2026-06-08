@@ -316,22 +316,7 @@ func makeQKX2Quants(n, nmax int, x, weights []float32, L []uint8, theMin *float3
 	mn := xmin
 	for is := range nstep + 1 {
 		iscale = (rmin + rdelta*float32(is) + float32(nmax)) / (xmax - mn)
-		var sumL, sumL2, sumXL float32
-		for i := range n {
-			l := nearestInt(iscale * (x[i] - mn))
-			if l < 0 {
-				l = 0
-			}
-			if l > nmax {
-				l = nmax
-			}
-			Laux[i] = uint8(l)
-			fl := float32(l)
-			w := weights[i]
-			sumL += w * fl
-			sumL2 += w * fl * fl
-			sumXL += w * fl * x[i]
-		}
+		sumL, sumL2, sumXL := qkxSums(x[:n], weights[:n], iscale, mn, nmax, Laux[:n])
 		D := sumW*sumL2 - sumL*sumL
 		if D > 0 {
 			thisScale := (sumW*sumXL - sumX*sumL) / D

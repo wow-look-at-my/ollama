@@ -155,3 +155,69 @@ loop_qx:
 done_qx:
 	VZEROUPPER
 	RET
+
+// func qkxProductsAVX(x, w *float32, n int, iscale, mn float32, nmax int32, pL, pL2, pXL *float32, lout *int32)
+//
+// For each of n (a multiple of 8) elements computes, bit-identically to the
+// scalar make_qkx2_quants inner loop:
+//
+//	l  = clamp(nearest_int(iscale*(x-mn)), 0, nmax)   (stored to lout)
+//	fl = float(l)
+//	pL  = w*fl ; pL2 = (w*fl)*fl ; pXL = (w*fl)*x
+//
+// As with qxProductsAVX only the element-wise work is vectorized (plain VMULPS,
+// no FMA); the caller sums pL/pL2/pXL sequentially so the reduction order
+// matches the scalar kernel.
+TEXT ·qkxProductsAVX(SB), NOSPLIT, $0-72
+	MOVQ x+0(FP), SI
+	MOVQ w+8(FP), BX
+	MOVQ n+16(FP), CX
+	MOVQ pL+40(FP), DI
+	MOVQ pL2+48(FP), DX
+	MOVQ pXL+56(FP), R8
+	MOVQ lout+64(FP), R9
+
+	VBROADCASTSS iscale+24(FP), Y10
+	VBROADCASTSS mn+28(FP), Y11
+	MOVL nmax+32(FP), AX
+	VMOVD AX, X12
+	VPBROADCASTD X12, Y12
+	VBROADCASTSS qxmagic<>(SB), Y13
+	VPBROADCASTD qxmask<>(SB), Y14
+	VPBROADCASTD qxsub<>(SB), Y15
+	VPXOR Y9, Y9, Y9
+
+	SHRQ $3, CX
+	TESTQ CX, CX
+	JZ done_qkx
+
+loop_qkx:
+	VMOVUPS (SI), Y0     // x
+	VMOVUPS (BX), Y1     // w
+	VSUBPS Y11, Y0, Y2   // t = x - mn
+	VMULPS Y10, Y2, Y2   // p = t * iscale
+	VADDPS Y13, Y2, Y2   // val = p + magic
+	VPAND Y14, Y2, Y2    // ival = bits & 0x7fffff
+	VPSUBD Y15, Y2, Y2   // l = ival - 0x400000
+	VPMAXSD Y9, Y2, Y2   // l = max(l, 0)
+	VPMINSD Y12, Y2, Y2  // l = min(l, nmax)
+	VMOVDQU Y2, (R9)     // lout = l
+	VCVTDQ2PS Y2, Y2     // fl = float(l)
+	VMULPS Y1, Y2, Y3    // pL = w*fl
+	VMOVUPS Y3, (DI)
+	VMULPS Y2, Y3, Y4    // pL2 = pL*fl
+	VMOVUPS Y4, (DX)
+	VMULPS Y0, Y3, Y4    // pXL = pL*x
+	VMOVUPS Y4, (R8)
+	ADDQ $32, SI
+	ADDQ $32, BX
+	ADDQ $32, DI
+	ADDQ $32, DX
+	ADDQ $32, R8
+	ADDQ $32, R9
+	DECQ CX
+	JNZ loop_qkx
+
+done_qkx:
+	VZEROUPPER
+	RET
