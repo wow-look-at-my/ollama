@@ -2,8 +2,10 @@ package server
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -95,7 +97,7 @@ func TestConvertFromSafetensors(t *testing.T) {
 				"tokenizer.json": tokenizer,
 			}
 
-			_, err := convertFromSafetensors(files, nil, false, "", true, func(resp api.ProgressResponse) {})
+			_, err := convertFromSafetensors(files, nil, false, "", true, "", false, func(resp api.ProgressResponse) {})
 
 			if (tt.wantErr == nil && err != nil) ||
 				(tt.wantErr != nil && err == nil) ||
@@ -103,6 +105,82 @@ func TestConvertFromSafetensors(t *testing.T) {
 				t.Errorf("convertFromSafetensors() error = %v, wantErr %v", err, tt.wantErr)
 			}
 		})
+	}
+}
+
+func TestSHA256File(t *testing.T) {
+	dir := t.TempDir()
+	// cover empty, small, and a range of larger sizes
+	for _, size := range []int{0, 1, 4096, 1<<20 - 1, 1 << 20, 1<<20 + 12345, 8 << 20} {
+		data := make([]byte, size)
+		for i := range data {
+			data[i] = byte(i*31 + 7)
+		}
+		p := filepath.Join(dir, fmt.Sprintf("f-%d", size))
+		if err := os.WriteFile(p, data, 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		got, err := sha256File(p)
+		if err != nil {
+			t.Fatalf("size %d: %v", size, err)
+		}
+		want := fmt.Sprintf("sha256:%x", sha256.Sum256(data))
+		if got != want {
+			t.Errorf("size %d: got %s, want %s", size, got, want)
+		}
+	}
+}
+
+// TestConvertFromSafetensorsSourceMode exercises the local create source mode:
+// inputs are read straight from a source directory (not the blob store), hashed
+// concurrently with conversion, and staged into the blob store afterwards.
+func TestConvertFromSafetensorsSourceMode(t *testing.T) {
+	t.Setenv("OLLAMA_MODELS", t.TempDir())
+
+	srcDir := t.TempDir()
+	writeSrc := func(name, content string) string {
+		p := filepath.Join(srcDir, name)
+		if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+		return p
+	}
+
+	// minimal empty safetensors (8-byte little-endian header length + "{}")
+	var buf bytes.Buffer
+	binary.Write(&buf, binary.LittleEndian, int64(len("{}")))
+	buf.WriteString("{}")
+	model := buf.String()
+
+	files := map[string]string{
+		"model.safetensors": writeSrc("model.safetensors", model),
+		"config.json":       writeSrc("config.json", `{"architectures": ["LlamaForCausalLM"], "vocab_size": 32000}`),
+		"tokenizer.json": writeSrc("tokenizer.json", `{
+			"version": "1.0", "truncation": null, "padding": null,
+			"added_tokens": [{"id": 0, "content": "<|endoftext|>", "single_word": false, "lstrip": false, "rstrip": false, "normalized": false, "special": true}]
+		}`),
+	}
+
+	if _, err := convertFromSafetensors(files, nil, false, "", true, "", true, func(api.ProgressResponse) {}); err != nil {
+		t.Fatalf("source-mode convert: %v", err)
+	}
+
+	// every input should have been hashed and staged into the blob store under
+	// its true digest, leaving the source files untouched.
+	for name, src := range files {
+		data, err := os.ReadFile(src)
+		if err != nil {
+			t.Fatal(err)
+		}
+		digest := fmt.Sprintf("sha256:%x", sha256.Sum256(data))
+		blob, err := manifest.BlobsPath(digest)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := os.Stat(blob); err != nil {
+			t.Errorf("%s: input not staged at %s: %v", name, digest, err)
+		}
 	}
 }
 

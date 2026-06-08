@@ -314,9 +314,24 @@ func CreateHandler(cmd *cobra.Command, args []string) error {
 	spinner := progress.NewSpinner(status)
 	p.Add(status, spinner)
 
-	req, err := modelfile.CreateRequest(filepath.Dir(filename))
+	// Enumerate the referenced files without hashing them first. Local
+	// safetensors creates defer hashing to the conversion step (server source
+	// mode), so the digest computation overlaps the quantize pass instead of
+	// blocking here for the full size of the model.
+	req, err := modelfile.CreateRequest(filepath.Dir(filename), false)
 	if err != nil {
+		spinner.Stop()
 		return err
+	}
+	sourceMode := allSafetensors(req)
+	if !sourceMode {
+		// GGUF imports and other inputs keep the content-addressed path: hash
+		// and stage the blobs up front.
+		req, err = modelfile.CreateRequest(filepath.Dir(filename), true)
+		if err != nil {
+			spinner.Stop()
+			return err
+		}
 	}
 	spinner.Stop()
 
@@ -332,20 +347,24 @@ func CreateHandler(cmd *cobra.Command, args []string) error {
 		req.DraftQuantize = draftQuantize
 	}
 
-	var g errgroup.Group
-	g.SetLimit(max(runtime.GOMAXPROCS(0)-1, 1))
+	// In source mode the inputs are hashed and staged into the blob store during
+	// conversion (concurrently with the quantize). Otherwise stage them now.
+	if !sourceMode {
+		var g errgroup.Group
+		g.SetLimit(max(runtime.GOMAXPROCS(0)-1, 1))
 
-	for f, digest := range req.Files {
-		g.Go(func() error { return server.EnsureBlobFromPath(f, digest) })
-	}
-	for f, digest := range req.Adapters {
-		g.Go(func() error { return server.EnsureBlobFromPath(f, digest) })
-	}
-	for f, digest := range req.DraftFiles {
-		g.Go(func() error { return server.EnsureBlobFromPath(f, digest) })
-	}
-	if err := g.Wait(); err != nil {
-		return err
+		for f, digest := range req.Files {
+			g.Go(func() error { return server.EnsureBlobFromPath(f, digest) })
+		}
+		for f, digest := range req.Adapters {
+			g.Go(func() error { return server.EnsureBlobFromPath(f, digest) })
+		}
+		for f, digest := range req.DraftFiles {
+			g.Go(func() error { return server.EnsureBlobFromPath(f, digest) })
+		}
+		if err := g.Wait(); err != nil {
+			return err
+		}
 	}
 
 	basenames := func(m map[string]string) map[string]string {
@@ -382,11 +401,32 @@ func CreateHandler(cmd *cobra.Command, args []string) error {
 			spinner = progress.NewSpinner(status)
 			p.Add(status, spinner)
 		}
+
+		if resp.Digest == "" && resp.Total > 0 {
+			spinner.SetMessage(fmt.Sprintf("%s (%d/%d)", resp.Status, resp.Completed, resp.Total))
+		}
 	}
 
-	return server.CreateDirect(cmd.Context(), *req, fn)
+	return server.CreateDirect(cmd.Context(), *req, sourceMode, fn)
 }
 
+// allSafetensors reports whether the request references at least one local file
+// and every referenced model/draft/adapter file is a safetensors file. Only
+// then is it safe to use the server's source mode (which reads inputs directly
+// from disk and hashes them concurrently with conversion); GGUF and other
+// inputs must go through the content-addressed blob store.
+func allSafetensors(req *api.CreateRequest) bool {
+	var any bool
+	for _, m := range []map[string]string{req.Files, req.DraftFiles, req.Adapters} {
+		for p := range m {
+			any = true
+			if !strings.HasSuffix(p, ".safetensors") {
+				return false
+			}
+		}
+	}
+	return any
+}
 
 func loadOrUnloadModel(cmd *cobra.Command, opts *runOptions) error {
 	p := progress.NewProgress(os.Stderr)

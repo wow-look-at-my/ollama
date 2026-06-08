@@ -295,7 +295,7 @@ func TestCreateModelValidatesSplitGGUFWithOriginalShardNames(t *testing.T) {
 	baseLayers, err := convertModelFromFiles(map[string]string{
 		"model-00001-of-00002.gguf": firstDigest,
 		"model-00002-of-00002.gguf": secondDigest,
-	}, nil, false, func(api.ProgressResponse) {})
+	}, nil, false, "", false, func(api.ProgressResponse) {})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -366,7 +366,7 @@ func TestBaseLayerTensorsReadsAllSplitGGUFShards(t *testing.T) {
 	baseLayers, err := convertModelFromFiles(map[string]string{
 		"model-00001-of-00002.gguf": firstDigest,
 		"model-00002-of-00002.gguf": secondDigest,
-	}, nil, false, func(api.ProgressResponse) {})
+	}, nil, false, "", false, func(api.ProgressResponse) {})
 	if err != nil {
 		t.Fatal(err)
 	}

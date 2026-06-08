@@ -38,7 +38,7 @@ func convertFull(t *testing.T, fsys fs.FS) (*os.File, fsc.Config, ggml.Tensors) 
 	}
 	defer f.Close()
 
-	if err := ConvertModel(fsys, f); err != nil {
+	if err := ConvertModel(fsys, f, nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -174,7 +174,7 @@ func TestConvertInvalidTensorNames(t *testing.T) {
 	}
 	generateSafetensorTestData(t, tempDir, td)
 
-	err = ConvertModel(os.DirFS(tempDir), f)
+	err = ConvertModel(os.DirFS(tempDir), f, nil)
 	if err == nil || !strings.HasPrefix(err.Error(), "duplicate tensor name") {
 		t.Errorf("expected error but didn't get one")
 	}
@@ -204,7 +204,7 @@ func TestConvertInvalidDatatype(t *testing.T) {
 	}
 	generateSafetensorTestData(t, tempDir, td)
 
-	err = ConvertModel(os.DirFS(tempDir), f)
+	err = ConvertModel(os.DirFS(tempDir), f, nil)
 	if err == nil || !strings.Contains(err.Error(), "unknown data type") {
 		t.Errorf("expected 'unknown data type' error but got: %v", err)
 	}

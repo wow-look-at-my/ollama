@@ -3,22 +3,26 @@ package convert
 import (
 	"bufio"
 	"encoding/binary"
+	"fmt"
 	"io"
 	"io/fs"
 	"math"
 	"os"
-	"strings"
 
 	"github.com/ollama/ollama/fs/ggml"
 )
 
 const kindQ8_0 = 8
 
-type q8Quantizer struct {
-	src safetensor
+// fusedQuantizer decodes a safetensor to float32 (via mmap when available) and
+// quantizes it to its target ggml kind in one pass, writing the block-encoded
+// bytes straight into the GGUF.
+type fusedQuantizer struct {
+	src  safetensor
+	kind uint32
 }
 
-func (q q8Quantizer) WriteTo(w io.Writer) (int64, error) {
+func (q fusedQuantizer) WriteTo(w io.Writer) (int64, error) {
 	var elemSize int
 	switch q.src.dtype {
 	case "F16", "BF16":
@@ -78,7 +82,17 @@ func (q q8Quantizer) WriteTo(w io.Writer) (int64, error) {
 		}
 	}
 
-	out := quantizeQ8_0(f32s)
+	var out []byte
+	switch q.kind {
+	case kindQ8_0:
+		out = quantizeQ8_0(f32s)
+	case kindQ4_K:
+		out = quantizeQ4_K(f32s)
+	case kindQ6_K:
+		out = quantizeQ6_K(f32s)
+	default:
+		return 0, fmt.Errorf("fused quantizer: unsupported kind %d", q.kind)
+	}
 	n, err := w.Write(out)
 	return int64(n), err
 }
@@ -104,34 +118,8 @@ func decodeTensorToF32(dtype string, data []byte, dst []float32) {
 	}
 }
 
+// ConvertModelQ8_0 is retained for callers/tests that want a direct Q8_0
+// conversion; it routes through the general fused quantizer.
 func ConvertModelQ8_0(fsys fs.FS, f *os.File) error {
-	kv, t, err := LoadModelMetadata(fsys)
-	if err != nil {
-		return err
-	}
-	conv := kv.(ModelConverter)
-
-	ts, cleanup, err := parseTensors(fsys, strings.NewReplacer(conv.Replacements()...))
-	if cleanup != nil {
-		defer cleanup()
-	}
-	if err != nil {
-		return err
-	}
-
-	ggmlTs := conv.Tensors(ts)
-	for _, gt := range ggmlTs {
-		if shouldQuantizeQ8(gt) {
-			if st, ok := gt.WriterTo.(safetensor); ok {
-				gt.WriterTo = q8Quantizer{src: st}
-				gt.Kind = kindQ8_0
-			}
-		}
-	}
-
-	return writeFile(f, conv.KV(t), ggmlTs)
-}
-
-func shouldQuantizeQ8(t *ggml.Tensor) bool {
-	return len(t.Shape) >= 2
+	return ConvertModelQuantized(fsys, f, ggml.FileTypeQ8_0, nil)
 }

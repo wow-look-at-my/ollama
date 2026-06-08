@@ -53,7 +53,14 @@ var deprecatedParameters = []string{
 }
 
 // CreateRequest creates a new *api.CreateRequest from an existing Modelfile
-func (f Modelfile) CreateRequest(relativeDir string) (*api.CreateRequest, error) {
+// CreateRequest builds an api.CreateRequest from the Modelfile. When
+// hashContent is true the referenced model/adapter/draft files are read in full
+// to compute their sha256 digests (content addressing). When false the files
+// are only enumerated and validated; each map value is the resolved source path
+// instead of a digest. The no-hash mode is used by the local create path, which
+// defers hashing so it can run concurrently with conversion (see
+// server.convertFromSafetensors source mode).
+func (f Modelfile) CreateRequest(relativeDir string, hashContent bool) (*api.CreateRequest, error) {
 	req := &api.CreateRequest{}
 
 	var messages []api.Message
@@ -70,7 +77,7 @@ func (f Modelfile) CreateRequest(relativeDir string) (*api.CreateRequest, error)
 				return nil, err
 			}
 
-			digestMap, err := fileDigestMap(path)
+			digestMap, err := fileDigestMap(path, hashContent)
 			if errors.Is(err, os.ErrNotExist) {
 				req.From = c.Args
 				continue
@@ -95,7 +102,7 @@ func (f Modelfile) CreateRequest(relativeDir string) (*api.CreateRequest, error)
 				return nil, err
 			}
 
-			digestMap, err := fileDigestMap(path)
+			digestMap, err := fileDigestMap(path, hashContent)
 			if err != nil {
 				return nil, err
 			}
@@ -117,7 +124,7 @@ func (f Modelfile) CreateRequest(relativeDir string) (*api.CreateRequest, error)
 				return nil, err
 			}
 
-			digestMap, err := fileDigestMap(path)
+			digestMap, err := fileDigestMap(path, hashContent)
 			if err != nil {
 				return nil, err
 			}
@@ -215,7 +222,7 @@ func canonicalLocalPath(path string) (string, error) {
 	return filepath.EvalSymlinks(abs)
 }
 
-func fileDigestMap(path string) (map[string]string, error) {
+func fileDigestMap(path string, hashContent bool) (map[string]string, error) {
 	fl := make(map[string]string)
 
 	fi, err := os.Stat(path)
@@ -252,6 +259,16 @@ func fileDigestMap(path string) (map[string]string, error) {
 		}
 	} else {
 		files = []string{path}
+	}
+
+	// When not hashing, only enumerate and validate the files; record the
+	// resolved source path as the value so the caller (local create) can read
+	// and hash them later, concurrently with conversion.
+	if !hashContent {
+		for _, f := range files {
+			fl[f] = f
+		}
+		return fl, nil
 	}
 
 	var mu sync.Mutex
