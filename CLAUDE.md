@@ -131,10 +131,11 @@ used to stage the input blob and is never referenced after conversion.
 For **local** create (`cmd.go` → `server.CreateDirect`, `sourceMode=true`) of
 safetensors, hashing is now deferred and overlapped: `cmd.go` enumerates the
 files without hashing (`CreateRequest(dir, false)`) and passes their source
-paths; `convertFromSafetensors` links them in and hashes each read-only mmap in
-a goroutine (`server/blobhash_unix.go:sha256FileMmap`) that runs **concurrently
-with `WriteGGUF`'s quantize pass** (shared OS page cache), then stages the blobs
-via `EnsureBlobFromPath` afterwards. The digest is still computed and inputs
+paths; `convertFromSafetensors` links them in and hashes each input in a
+goroutine (`server/blobhash.go:sha256File`) that runs **concurrently with
+`WriteGGUF`'s quantize pass** — the conversion mmaps the same files, so the read
+shares the OS page cache with that mapping (read from disk once) — then stages
+the blobs via `EnsureBlobFromPath` afterwards. The digest is still computed and inputs
 still land in the blob store, but the hash hides behind the conversion instead
 of blocking before it. The remote/HTTP path (`CreateHandler`, `sourceMode=false`)
 and GGUF imports keep the up-front content-addressed flow unchanged.

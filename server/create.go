@@ -531,14 +531,15 @@ func convertFromSafetensors(files map[string]string, baseLayers []*layerGGML, is
 
 	// In source mode, hash the inputs concurrently with the conversion below so
 	// the digest computation overlaps the quantize pass rather than blocking
-	// before it. Both readers share the OS page cache for the same files.
+	// before it. The conversion mmaps the same files; the read here shares the
+	// OS page cache with that mapping, so the bytes are read from disk once.
 	var hashGroup errgroup.Group
 	var hashMu sync.Mutex
 	hashed := make(map[string]string, len(files))
 	if sourceMode {
 		for fp, srcPath := range files {
 			hashGroup.Go(func() error {
-				digest, err := sha256FileMmap(srcPath)
+				digest, err := sha256File(srcPath)
 				if err != nil {
 					return fmt.Errorf("hashing %s: %w", srcPath, err)
 				}
