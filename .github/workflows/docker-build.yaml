@@ -20,6 +20,8 @@ jobs:
       image_tag: ${{ steps.meta.outputs.version }}
     steps:
       - uses: actions/checkout@v4
+      - name: Pin LLAMA_CPP_VERSION to current fork master
+        run: scripts/update-llamacpp-version.sh
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
       - name: Log in to GitHub Container Registry
