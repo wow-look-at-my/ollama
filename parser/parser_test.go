@@ -84,7 +84,7 @@ DRAFT ./draft.gguf
 `))
 	require.NoError(t, err)
 
-	req, err := modelfile.CreateRequest(dir)
+	req, err := modelfile.CreateRequest(dir, true)
 	require.NoError(t, err)
 	require.Len(t, req.DraftFiles, 1)
 	assert.Contains(t, req.DraftFiles, draft)
@@ -101,7 +101,7 @@ DRAFT ./model.gguf
 `))
 	require.NoError(t, err)
 
-	_, err = modelfile.CreateRequest(dir)
+	_, err = modelfile.CreateRequest(dir, true)
 	require.ErrorContains(t, err, "DRAFT must not reference the same local path as FROM")
 }
 
@@ -116,7 +116,7 @@ DRAFT .
 `))
 	require.NoError(t, err)
 
-	_, err = modelfile.CreateRequest(dir)
+	_, err = modelfile.CreateRequest(dir, true)
 	require.ErrorContains(t, err, "DRAFT must not reference the same local path as FROM")
 }
 
@@ -832,7 +832,7 @@ MESSAGE assistant Hi! How are you?
 			t.Error(err)
 		}
 
-		actual, err := p.CreateRequest("")
+		actual, err := p.CreateRequest("", true)
 		if err != nil {
 			t.Error(err)
 		}
@@ -909,7 +909,7 @@ func TestCreateRequestFiles(t *testing.T) {
 			t.Error(err)
 		}
 
-		actual, err := p.CreateRequest("")
+		actual, err := p.CreateRequest("", true)
 		if err != nil {
 			t.Error(err)
 		}

@@ -21,9 +21,11 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 
 	"github.com/gin-gonic/gin"
+	"golang.org/x/sync/errgroup"
 
 	"github.com/ollama/ollama/api"
 	"github.com/ollama/ollama/convert"
@@ -191,7 +193,7 @@ func (s *Server) CreateHandler(c *gin.Context) {
 				}
 			}
 		} else if r.Files != nil {
-			baseLayers, err = convertModelFromFiles(r.Files, baseLayers, false, strings.ToUpper(cmp.Or(r.Quantize, r.Quantization)), fn)
+			baseLayers, err = convertModelFromFiles(r.Files, baseLayers, false, strings.ToUpper(cmp.Or(r.Quantize, r.Quantization)), false, fn)
 			if err != nil {
 				for _, badReq := range []error{errNoFilesProvided, errOnlyGGUFSupported, errUnknownType} {
 					if errors.Is(err, badReq) {
@@ -214,7 +216,7 @@ func (s *Server) CreateHandler(c *gin.Context) {
 
 		var draftLayers []*layerGGML
 		if !remote && r.DraftFiles != nil {
-			draftLayers, err = convertDraftModelFromFiles(r.DraftFiles, baseLayers, fn)
+			draftLayers, err = convertDraftModelFromFiles(r.DraftFiles, baseLayers, false, fn)
 			if err != nil {
 				for _, badReq := range []error{errNoFilesProvided, errOnlyGGUFSupported, errUnknownType, errFilePath} {
 					if errors.Is(err, badReq) {
@@ -229,7 +231,7 @@ func (s *Server) CreateHandler(c *gin.Context) {
 
 		var adapterLayers []*layerGGML
 		if !remote && r.Adapters != nil {
-			adapterLayers, err = convertModelFromFiles(r.Adapters, baseLayers, true, "", fn)
+			adapterLayers, err = convertModelFromFiles(r.Adapters, baseLayers, true, "", false, fn)
 			if err != nil {
 				for _, badReq := range []error{errNoFilesProvided, errOnlyOneAdapterSupported, errOnlyGGUFSupported, errUnknownType, errFilePath} {
 					if errors.Is(err, badReq) {
@@ -374,19 +376,19 @@ func remoteURL(raw string) (string, error) {
 // convertModelFromFiles converts a model. quantType, when set to a supported
 // type, lets the safetensors path quantize during conversion in a single pass
 // (see convertFromSafetensors); pass "" to convert at full precision.
-func convertModelFromFiles(files map[string]string, baseLayers []*layerGGML, isAdapter bool, quantType string, fn func(resp api.ProgressResponse)) ([]*layerGGML, error) {
-	return convertModelFromFilesWithMediaType(files, baseLayers, isAdapter, "", true, quantType, fn)
+func convertModelFromFiles(files map[string]string, baseLayers []*layerGGML, isAdapter bool, quantType string, sourceMode bool, fn func(resp api.ProgressResponse)) ([]*layerGGML, error) {
+	return convertModelFromFilesWithMediaType(files, baseLayers, isAdapter, "", true, quantType, sourceMode, fn)
 }
 
-func convertDraftModelFromFiles(files map[string]string, baseLayers []*layerGGML, fn func(resp api.ProgressResponse)) ([]*layerGGML, error) {
+func convertDraftModelFromFiles(files map[string]string, baseLayers []*layerGGML, sourceMode bool, fn func(resp api.ProgressResponse)) ([]*layerGGML, error) {
 	// drafts are quantized later via llama-quantize, not fused during conversion
-	return convertModelFromFilesWithMediaType(files, baseLayers, false, manifest.MediaTypeImageDraft, false, "", fn)
+	return convertModelFromFilesWithMediaType(files, baseLayers, false, manifest.MediaTypeImageDraft, false, "", sourceMode, fn)
 }
 
-func convertModelFromFilesWithMediaType(files map[string]string, baseLayers []*layerGGML, isAdapter bool, mediaType string, detectTemplate bool, quantType string, fn func(resp api.ProgressResponse)) ([]*layerGGML, error) {
+func convertModelFromFilesWithMediaType(files map[string]string, baseLayers []*layerGGML, isAdapter bool, mediaType string, detectTemplate bool, quantType string, sourceMode bool, fn func(resp api.ProgressResponse)) ([]*layerGGML, error) {
 	switch detectModelTypeFromFiles(files) {
 	case "safetensors":
-		layers, err := convertFromSafetensors(files, baseLayers, isAdapter, mediaType, detectTemplate, quantType, fn)
+		layers, err := convertFromSafetensors(files, baseLayers, isAdapter, mediaType, detectTemplate, quantType, sourceMode, fn)
 		if err != nil {
 			slog.Error("error converting from safetensors", "error", err)
 			return nil, err
@@ -482,7 +484,16 @@ func detectModelTypeFromFiles(files map[string]string) string {
 	return ""
 }
 
-func convertFromSafetensors(files map[string]string, baseLayers []*layerGGML, isAdapter bool, mediaType string, detectTemplate bool, quantType string, fn func(resp api.ProgressResponse)) ([]*layerGGML, error) {
+// convertFromSafetensors converts safetensors inputs to a GGUF model layer.
+//
+// In the default (remote) mode each files map value is a sha256 digest and the
+// inputs are read from the content-addressed blob store. In source mode (local
+// create) each value is instead the absolute source path: the file is linked in
+// directly and its digest is computed by hashing the read-only mmap in a
+// goroutine that runs concurrently with WriteGGUF's quantization, then staged
+// into the blob store afterwards. This hides the (potentially long) input hash
+// behind the conversion instead of running it as a separate up-front pass.
+func convertFromSafetensors(files map[string]string, baseLayers []*layerGGML, isAdapter bool, mediaType string, detectTemplate bool, quantType string, sourceMode bool, fn func(resp api.ProgressResponse)) ([]*layerGGML, error) {
 	tmpDir, err := os.MkdirTemp(envconfig.Models(), "ollama-safetensors")
 	if err != nil {
 		return nil, err
@@ -495,7 +506,7 @@ func convertFromSafetensors(files map[string]string, baseLayers []*layerGGML, is
 	}
 	defer root.Close()
 
-	for fp, digest := range files {
+	for fp, ref := range files {
 		if !fs.ValidPath(fp) {
 			return nil, fmt.Errorf("%w: %s", errFilePath, fp)
 		}
@@ -504,12 +515,38 @@ func convertFromSafetensors(files map[string]string, baseLayers []*layerGGML, is
 			return nil, fmt.Errorf("%w: %s: %s", errFilePath, err, fp)
 		}
 
-		blobPath, err := manifest.BlobsPath(digest)
-		if err != nil {
+		// In source mode ref is the source path; otherwise it is a digest whose
+		// blob we link in.
+		linkSrc := ref
+		if !sourceMode {
+			linkSrc, err = manifest.BlobsPath(ref)
+			if err != nil {
+				return nil, err
+			}
+		}
+		if err := createLink(linkSrc, filepath.Join(tmpDir, fp)); err != nil {
 			return nil, err
 		}
-		if err := createLink(blobPath, filepath.Join(tmpDir, fp)); err != nil {
-			return nil, err
+	}
+
+	// In source mode, hash the inputs concurrently with the conversion below so
+	// the digest computation overlaps the quantize pass rather than blocking
+	// before it. Both readers share the OS page cache for the same files.
+	var hashGroup errgroup.Group
+	var hashMu sync.Mutex
+	hashed := make(map[string]string, len(files))
+	if sourceMode {
+		for fp, srcPath := range files {
+			hashGroup.Go(func() error {
+				digest, err := sha256FileMmap(srcPath)
+				if err != nil {
+					return fmt.Errorf("hashing %s: %w", srcPath, err)
+				}
+				hashMu.Lock()
+				hashed[fp] = digest
+				hashMu.Unlock()
+				return nil
+			})
 		}
 	}
 
@@ -583,6 +620,20 @@ func convertFromSafetensors(files map[string]string, baseLayers []*layerGGML, is
 			fn(api.ProgressResponse{Status: "converting adapter", Total: int64(total), Completed: int64(current)})
 		}); err != nil {
 			return nil, err
+		}
+	}
+
+	// In source mode the conversion above ran concurrently with the input
+	// hashing; wait for the digests and stage the inputs into the blob store
+	// (content addressing), preserving the behaviour of the pre-hashed path.
+	if sourceMode {
+		if err := hashGroup.Wait(); err != nil {
+			return nil, err
+		}
+		for fp, srcPath := range files {
+			if err := EnsureBlobFromPath(srcPath, hashed[fp]); err != nil {
+				return nil, err
+			}
 		}
 	}
 
@@ -914,9 +965,14 @@ func createModel(r api.CreateRequest, name model.Name, baseLayers []*layerGGML, 
 }
 
 // CreateDirect creates a model directly on disk, bypassing the HTTP server.
-// r.Files, r.Adapters, and r.DraftFiles must map basenames to sha256 digests,
-// with blobs already present in the ollama blob store (see EnsureBlobFromPath).
-func CreateDirect(ctx context.Context, r api.CreateRequest, fn func(api.ProgressResponse)) error {
+//
+// When sourceMode is false, r.Files, r.Adapters, and r.DraftFiles map basenames
+// to sha256 digests of blobs already present in the ollama blob store (see
+// EnsureBlobFromPath). When sourceMode is true (used for local safetensors
+// creates), those map values are instead absolute source paths: the inputs are
+// read directly from disk, hashed concurrently with conversion, and staged into
+// the blob store afterwards.
+func CreateDirect(ctx context.Context, r api.CreateRequest, sourceMode bool, fn func(api.ProgressResponse)) error {
 	config := &model.ConfigV2{
 		OS:           "linux",
 		Architecture: "amd64",
@@ -941,7 +997,7 @@ func CreateDirect(ctx context.Context, r api.CreateRequest, fn func(api.Progress
 	case r.From != "":
 		baseLayers, err = parseFromModel(ctx, model.ParseName(r.From), fn)
 	case r.Files != nil:
-		baseLayers, err = convertModelFromFiles(r.Files, baseLayers, false, strings.ToUpper(cmp.Or(r.Quantize, r.Quantization)), fn)
+		baseLayers, err = convertModelFromFiles(r.Files, baseLayers, false, strings.ToUpper(cmp.Or(r.Quantize, r.Quantization)), sourceMode, fn)
 	default:
 		err = errNeitherFromOrFiles
 	}
@@ -950,7 +1006,7 @@ func CreateDirect(ctx context.Context, r api.CreateRequest, fn func(api.Progress
 	}
 
 	if r.DraftFiles != nil {
-		draftLayers, err := convertDraftModelFromFiles(r.DraftFiles, baseLayers, fn)
+		draftLayers, err := convertDraftModelFromFiles(r.DraftFiles, baseLayers, sourceMode, fn)
 		if err != nil {
 			return err
 		}
@@ -958,7 +1014,7 @@ func CreateDirect(ctx context.Context, r api.CreateRequest, fn func(api.Progress
 	}
 
 	if r.Adapters != nil {
-		adapterLayers, err := convertModelFromFiles(r.Adapters, baseLayers, true, "", fn)
+		adapterLayers, err := convertModelFromFiles(r.Adapters, baseLayers, true, "", sourceMode, fn)
 		if err != nil {
 			return err
 		}
