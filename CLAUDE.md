@@ -117,7 +117,13 @@ fusable (other types like `Q4_K_S` that need Q5_K, multimodal projector splits,
 non-safetensor tensor sources) returns `convert.ErrFusedUnsupported` and falls
 back to the convert-then-`llama-quantize` path. `nearestInt` (ggml's
 round-half-to-even) is mandatory for the K-quants — `math.Round` silently
-diverges. To run the bit-identical tests, build the llama.cpp fork's ggml and
+diverges. The K-quant per-group scale searches (`makeQXQuants` for Q6_K,
+`makeQKX2Quants` for Q4_K) have **AVX2** inner loops (`convert/simd_amd64.s`:
+`qxProductsAVX`/`qkxProductsAVX`, dispatched via `qxSums`/`qkxSums` behind
+`cpu.X86.HasAVX2`, scalar fallback in `simd_other.go`). They vectorize only the
+element-wise products (plain `VMULPS`, no FMA) and sum sequentially, so the
+output stays byte-identical (they're faster than ggml's own `-O3 -march=native`
+`quantize_row_q{4,6}_K_ref`). To run the bit-identical tests, build the llama.cpp fork's ggml and
 point `OLLAMA_GGML_LIB_DIR`/`_SRC_DIR`/`_INC_DIR` (kernels) and
 `OLLAMA_LLAMA_QUANTIZE` (mixture) at it.
 
@@ -154,6 +160,7 @@ the current design.
 - `convert/convert_gemma4.go` — `ConvertGemma4MTPDraft` (+ `gemma4AssistantModel`): standalone `gemma4_assistant` drafter GGUF
 - `convert/convert_gemma4_assistant_test.go` — converter unit tests (synthetic fixtures)
 - `convert/quantize.go` — fused Go quant kernels (Q8_0/Q4_K/Q6_K, `nearestInt`)
+- `convert/simd_amd64.s` (+ `simd_amd64.go`/`simd_other.go`) — AVX2 inner loops for the Q4_K/Q6_K scale searches (`qkxProductsAVX`/`qxProductsAVX`), bit-identical, with scalar fallback
 - `convert/quantize_mixture.go` — `ConvertModelQuantized` driver + the k-quant type mixture + `ErrFusedUnsupported`
 - `convert/quantize_hash_test.go`, `convert/quantize_mixture_test.go` — bit-identical kernel + mixture validation vs llama-quantize
 - `convert/quantize_test.go` (`BenchmarkQuantize*`) + `convert/ggmlbench/` (`BenchmarkGGMLQuantize*`, cgo, tag `ggmlbench`) — speed comparison of the Go kernels vs ggml's `quantize_row_*_ref` (the cgo bench is a separate package because `convert` has Go asm)
