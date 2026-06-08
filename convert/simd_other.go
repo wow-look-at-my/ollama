@@ -31,3 +31,15 @@ func convertF32ToBF16(dst []uint16, src []float32) {
 		dst[i] = uint16(math.Float32bits(v) >> 16)
 	}
 }
+
+// qxSums computes the make_qx_quants reduction sums for one group (scalar).
+func qxSums(x []float32, iscale float32, nmax int) (sumlx, suml2 float32) {
+	for i := range x {
+		l := max(-nmax, min(nmax-1, nearestInt(iscale*x[i])))
+		w := x[i] * x[i]
+		fl := float32(l)
+		sumlx += w * x[i] * fl
+		suml2 += w * fl * fl
+	}
+	return sumlx, suml2
+}

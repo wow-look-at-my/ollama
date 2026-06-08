@@ -240,14 +240,7 @@ func makeQXQuants(n, nmax int, x []float32) float32 {
 		return 0
 	}
 	iscale := float32(-nmax) / maxv
-	var sumlx, suml2 float32
-	for i := range n {
-		l := max(-nmax, min(nmax-1, nearestInt(iscale*x[i])))
-		w := x[i] * x[i]
-		fl := float32(l)
-		sumlx += w * x[i] * fl
-		suml2 += w * fl * fl
-	}
+	sumlx, suml2 := qxSums(x[:n], iscale, nmax)
 	var scale float32
 	if suml2 != 0 {
 		scale = sumlx / suml2
@@ -258,14 +251,7 @@ func makeQXQuants(n, nmax int, x []float32) float32 {
 			continue
 		}
 		iscale = -(float32(nmax) + 0.1*float32(is)) / maxv
-		sumlx, suml2 = 0, 0
-		for i := range n {
-			l := max(-nmax, min(nmax-1, nearestInt(iscale*x[i])))
-			w := x[i] * x[i]
-			fl := float32(l)
-			sumlx += w * x[i] * fl
-			suml2 += w * fl * fl
-		}
+		sumlx, suml2 = qxSums(x[:n], iscale, nmax)
 		if suml2 > 0 && sumlx*sumlx > best*suml2 {
 			scale = sumlx / suml2
 			best = scale * sumlx
