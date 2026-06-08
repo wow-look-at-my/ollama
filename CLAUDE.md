@@ -156,6 +156,7 @@ the current design.
 - `convert/quantize.go` — fused Go quant kernels (Q8_0/Q4_K/Q6_K, `nearestInt`)
 - `convert/quantize_mixture.go` — `ConvertModelQuantized` driver + the k-quant type mixture + `ErrFusedUnsupported`
 - `convert/quantize_hash_test.go`, `convert/quantize_mixture_test.go` — bit-identical kernel + mixture validation vs llama-quantize
+- `convert/quantize_test.go` (`BenchmarkQuantize*`) + `convert/ggmlbench/` (`BenchmarkGGMLQuantize*`, cgo, tag `ggmlbench`) — speed comparison of the Go kernels vs ggml's `quantize_row_*_ref` (the cgo bench is a separate package because `convert` has Go asm)
 - `convert/convert.go` — `convertModel` shared core (full-precision vs fused)
 - `server/create.go` — `convertMTPDraftFromSafetensors` dispatch (gemma4 vs qwen); fused-quantize wiring in `convertFromSafetensors`
 - `server/quantization.go` — `llama-quantize` fallback path + clean progress capture
