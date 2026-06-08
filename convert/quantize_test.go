@@ -36,6 +36,17 @@ func BenchmarkQuantizeQ4_K(b *testing.B) {
 	}
 }
 
+func BenchmarkQuantizeQ6_K(b *testing.B) {
+	n := (benchElems / 256) * 256
+	src := makeF32Data(n)
+	b.SetBytes(int64(n * 4))
+	b.ReportAllocs()
+	b.ResetTimer()
+	for range b.N {
+		benchDst = quantizeQ6_K(src)
+	}
+}
+
 func TestQuantizeQ8_0_Correctness(t *testing.T) {
 	src := []float32{
 		1.0, -1.0, 0.5, -0.5, 0.0, 0.25, -0.25, 0.125,
