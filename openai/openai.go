@@ -34,7 +34,7 @@ type ErrorResponse struct {
 type Message struct {
 	Role       string     `json:"role"`
 	Content    any        `json:"content"`
-	Reasoning  string     `json:"reasoning,omitempty"`
+	Reasoning  string     `json:"reasoning_content,omitempty"`
 	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
 	Name       string     `json:"name,omitempty"`
 	ToolCallID string     `json:"tool_call_id,omitempty"`
