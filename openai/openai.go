@@ -32,12 +32,23 @@ type ErrorResponse struct {
 }
 
 type Message struct {
-	Role       string     `json:"role"`
-	Content    any        `json:"content"`
-	Reasoning  string     `json:"reasoning,omitempty"`
-	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
-	Name       string     `json:"name,omitempty"`
-	ToolCallID string     `json:"tool_call_id,omitempty"`
+	Role             string     `json:"role"`
+	Content          any        `json:"content"`
+	Reasoning        string     `json:"reasoning,omitempty"`
+	ReasoningContent string     `json:"reasoning_content,omitempty"`
+	ToolCalls        []ToolCall `json:"tool_calls,omitempty"`
+	Name             string     `json:"name,omitempty"`
+	ToolCallID       string     `json:"tool_call_id,omitempty"`
+}
+
+// thinking returns the reasoning/thinking content, preferring reasoning_content
+// (DeepSeek/standard convention) over reasoning (older Ollama convention) when
+// parsing incoming messages that may use either field.
+func (m Message) thinking() string {
+	if m.ReasoningContent != "" {
+		return m.ReasoningContent
+	}
+	return m.Reasoning
 }
 
 type ChoiceLogprobs struct {
@@ -308,7 +319,7 @@ func ToChatCompletion(id string, r api.ChatResponse) ChatCompletion {
 		SystemFingerprint: "fp_ollama",
 		Choices: []Choice{{
 			Index:   0,
-			Message: Message{Role: r.Message.Role, Content: r.Message.Content, ToolCalls: toolCalls, Reasoning: r.Message.Thinking},
+			Message: Message{Role: r.Message.Role, Content: r.Message.Content, ToolCalls: toolCalls, Reasoning: r.Message.Thinking, ReasoningContent: r.Message.Thinking},
 			FinishReason: func(reason string) *string {
 				if len(toolCalls) > 0 {
 					reason = "tool_calls"
@@ -340,7 +351,7 @@ func toChunk(id string, r api.ChatResponse, toolCallSent bool) ChatCompletionChu
 		SystemFingerprint: "fp_ollama",
 		Choices: []ChunkChoice{{
 			Index: 0,
-			Delta: Message{Role: "assistant", Content: r.Message.Content, ToolCalls: toolCalls, Reasoning: r.Message.Thinking},
+			Delta: Message{Role: "assistant", Content: r.Message.Content, ToolCalls: toolCalls, Reasoning: r.Message.Thinking, ReasoningContent: r.Message.Thinking},
 			FinishReason: func(reason string) *string {
 				if len(reason) > 0 {
 					if toolCallSent || len(toolCalls) > 0 {
@@ -395,6 +406,7 @@ func ToChunks(id string, r api.ChatResponse, toolCallSent bool) []ChatCompletion
 	// Keep both split chunks on the same timestamp since they represent one logical emission.
 	contentOrToolCallsChunk.Created = reasoningChunk.Created
 	contentOrToolCallsChunk.Choices[0].Delta.Reasoning = ""
+	contentOrToolCallsChunk.Choices[0].Delta.ReasoningContent = ""
 	contentOrToolCallsChunk.Choices[0].Logprobs = nil
 
 	return []ChatCompletionChunk{
@@ -547,7 +559,7 @@ func FromChatRequest(r ChatCompletionRequest) (*api.ChatRequest, error) {
 			if err != nil {
 				return nil, err
 			}
-			messages = append(messages, api.Message{Role: msg.Role, Content: content, Thinking: msg.Reasoning, ToolCalls: toolCalls, ToolName: toolName, ToolCallID: msg.ToolCallID})
+			messages = append(messages, api.Message{Role: msg.Role, Content: content, Thinking: msg.thinking(), ToolCalls: toolCalls, ToolName: toolName, ToolCallID: msg.ToolCallID})
 		case []any:
 			for _, c := range content {
 				data, ok := c.(map[string]any)
@@ -607,7 +619,7 @@ func FromChatRequest(r ChatCompletionRequest) (*api.ChatRequest, error) {
 				messages[len(messages)-1].ToolCalls = toolCalls
 				messages[len(messages)-1].ToolName = toolName
 				messages[len(messages)-1].ToolCallID = msg.ToolCallID
-				messages[len(messages)-1].Thinking = msg.Reasoning
+				messages[len(messages)-1].Thinking = msg.thinking()
 			}
 		default:
 			// content is only optional if tool calls are present
@@ -619,7 +631,7 @@ func FromChatRequest(r ChatCompletionRequest) (*api.ChatRequest, error) {
 			if err != nil {
 				return nil, err
 			}
-			messages = append(messages, api.Message{Role: msg.Role, Thinking: msg.Reasoning, ToolCalls: toolCalls, ToolCallID: msg.ToolCallID})
+			messages = append(messages, api.Message{Role: msg.Role, Thinking: msg.thinking(), ToolCalls: toolCalls, ToolCallID: msg.ToolCallID})
 		}
 	}
 
