@@ -108,10 +108,10 @@ func TestConvertFromSafetensors(t *testing.T) {
 	}
 }
 
-func TestSHA256FileMmap(t *testing.T) {
+func TestSHA256File(t *testing.T) {
 	dir := t.TempDir()
-	// cover empty, small, and sizes around the 8 MiB hashing chunk boundary
-	for _, size := range []int{0, 1, 4096, 8<<20 - 1, 8 << 20, 8<<20 + 12345} {
+	// cover empty, small, and a range of larger sizes
+	for _, size := range []int{0, 1, 4096, 1<<20 - 1, 1 << 20, 1<<20 + 12345, 8 << 20} {
 		data := make([]byte, size)
 		for i := range data {
 			data[i] = byte(i*31 + 7)
@@ -121,7 +121,7 @@ func TestSHA256FileMmap(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		got, err := sha256FileMmap(p)
+		got, err := sha256File(p)
 		if err != nil {
 			t.Fatalf("size %d: %v", size, err)
 		}
