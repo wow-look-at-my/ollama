@@ -15,6 +15,7 @@ permissions:
 
 jobs:
   build:
+    timeout-minutes: 180
     runs-on: ubuntu-latest
     outputs:
       image_tag: ${{ steps.meta.outputs.version }}
@@ -55,6 +56,7 @@ jobs:
         run: docker run --rm ghcr.io/${{ github.repository }}:${{ steps.meta.outputs.version }} --version
 
   bench:
+    timeout-minutes: 180
     # needs: build so we can read needs.build.outputs.image_tag for the container
     # field (and so it runs off the ghcr image built above).
     needs: [build]
