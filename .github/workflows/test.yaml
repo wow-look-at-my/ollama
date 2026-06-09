@@ -19,6 +19,7 @@ on:
 
 jobs:
   changes:
+    timeout-minutes: 180
     runs-on: ubuntu-latest
     outputs:
       changed: ${{ steps.changes.outputs.changed }}
@@ -57,6 +58,7 @@ jobs:
           echo enginehash=$(cat LLAMA_CPP_VERSION)-$(cat MLX_VERSION)-$(cat MLX_C_VERSION) | tee -a $GITHUB_OUTPUT
 
   patches:
+    timeout-minutes: 180
     strategy:
       matrix:
         os: [ubuntu-latest, windows-latest]
@@ -76,6 +78,7 @@ jobs:
             -DOLLAMA_RUNNER_DIR=
 
   linux:
+    timeout-minutes: 180
     needs: [changes]
     if: needs.changes.outputs.changed == 'True'
     strategy:
@@ -160,6 +163,7 @@ jobs:
           "$RUNNER_TEMP/ollama-local/lib/ollama/llama-server" --version
           test -x "$RUNNER_TEMP/ollama-local/lib/ollama/llama-quantize"
   windows:
+    timeout-minutes: 180
     needs: [changes]
     # Windows CI is off by default on this fork (not a target we care about). It needs no
     # self-hosted runner if enabled - runs-on is windows-latest below - so to turn it on just
@@ -352,6 +356,7 @@ jobs:
             throw "missing installed llama-quantize.exe"
           }
   go_mod_tidy:
+    timeout-minutes: 180
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -359,6 +364,7 @@ jobs:
         run: go mod tidy --diff || (echo "Please run 'go mod tidy'." && exit 1)
 
   test:
+    timeout-minutes: 180
     needs: [changes]
     strategy:
       matrix:

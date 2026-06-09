@@ -18,6 +18,7 @@ env:
 
 jobs:
   setup-environment:
+    timeout-minutes: 180
     runs-on: ubuntu-latest
     outputs:
       GOFLAGS: ${{ steps.goflags.outputs.GOFLAGS }}
@@ -38,6 +39,7 @@ jobs:
           } >>"${GITHUB_OUTPUT}"
 
   darwin-build:
+    timeout-minutes: 180
     runs-on: macos-26-xlarge
     needs: setup-environment
     env:
@@ -70,6 +72,7 @@ jobs:
   # filesystem artifacts below. This preserves parallelism without Docker
   # registry credentials or oversized GitHub layer caches.
   linux-payloads:
+    timeout-minutes: 180
     runs-on: ${{ matrix.arch == 'arm64' && 'linux-arm64' || 'linux' }}
     needs: setup-environment
     strategy:
@@ -135,6 +138,7 @@ jobs:
           compression-level: 0
 
   linux-go:
+    timeout-minutes: 180
     runs-on: ${{ matrix.arch == 'arm64' && 'linux-arm64' || 'linux' }}
     needs: setup-environment
     strategy:
@@ -172,6 +176,7 @@ jobs:
   # MLX payloads are intentionally excluded from this workflow; the Dockerfile
   # still exposes publish-mlx for a separate MLX-specific workflow.
   linux-bundles:
+    timeout-minutes: 180
     runs-on: ${{ matrix.arch == 'arm64' && 'linux-arm64' || 'linux' }}
     needs: [linux-payloads, linux-go]
     strategy:
@@ -287,6 +292,7 @@ jobs:
           compression-level: 0
 
   windows-depends:
+    timeout-minutes: 180
     needs: setup-environment
     strategy:
       fail-fast: false
@@ -447,6 +453,7 @@ jobs:
           compression-level: 0
 
   windows-build:
+    timeout-minutes: 180
     runs-on: windows
     needs: setup-environment
     env:
@@ -510,6 +517,7 @@ jobs:
           compression-level: 0
 
   windows-package:
+    timeout-minutes: 180
     runs-on: windows
     needs: [setup-environment, windows-build, windows-depends]
     env:
