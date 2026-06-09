@@ -1,0 +1,24 @@
+name: lint-workflows
+
+# Guard the repo-wide invariant that every workflow job is capped at a
+# 3-hour (timeout-minutes: 180) maximum duration. Fails if any job is added
+# or edited without that cap. See scripts/check-workflow-timeouts.py.
+on:
+  push:
+
+permissions:
+  contents: read
+
+jobs:
+  timeouts:
+    timeout-minutes: 180
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      - name: Install PyYAML
+        run: python3 -m pip install --quiet pyyaml
+      - name: Verify every job declares a 3h timeout-minutes
+        run: python3 scripts/check-workflow-timeouts.py
