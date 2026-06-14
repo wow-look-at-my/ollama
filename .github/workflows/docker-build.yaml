@@ -60,7 +60,17 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: docker/setup-buildx-action@v3
+      - name: Set up Docker Buildx (chunked-push builder)
+        uses: docker/setup-buildx-action@v3
+        with:
+          # Use the fork of buildkit that vendors the chunked-upload containerd
+          # pusher, and pass the chunk size into the buildkitd container so the
+          # push to buildhost is split into PATCH requests each below the
+          # reverse-proxy (Cloudflare) 100 MB request-body limit. The image is an
+          # ordinary buildkitd image; chunking is purely this runtime env toggle.
+          driver-opts: |
+            image=ghcr.io/wow-look-at-my/buildkit:latest
+            env.CONTAINERD_PUSH_CHUNK_SIZE=94371840
       - name: Log in to buildhost
         uses: wow-look-at-my/buildhost/.github/actions/buildhost-docker-login@master
       - name: Build and push to buildhost
