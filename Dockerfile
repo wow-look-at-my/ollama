@@ -80,7 +80,9 @@ ENV VULKAN_SDK=/usr/local
 #
 # llama-server stages — rebuild when LLAMA_CPP_VERSION, llama/server/, or llama/compat/ changes.
 #
-# CPU stage: llama-server + ggml-base + ggml-cpu variants → lib/ollama/
+# CPU stage: llama-server + ggml-base + the single baseline ggml-cpu → lib/ollama/
+# (GPU-only fork: GGML_CPU_ALL_VARIANTS is off; the CPU backend ships only
+# because it is ggml's mandatory host-side component, not for inference)
 # GPU stages: GPU backend .so only → lib/ollama/<variant>/
 #
 

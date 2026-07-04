@@ -3246,6 +3246,37 @@ bool translate_metadata(const llama_model_loader * ml,
     return no_mmap;
 }
 
+bool metadata_string_views_within(const gguf_context * meta,
+                                  const void * buf,
+                                  size_t buf_size) {
+    if (!meta || !buf) return false;
+
+    const char * base = static_cast<const char *>(buf);
+    const auto within = [base, buf_size](std::string_view sv) {
+        // empty payloads carry no meaningful pointer; treat them as intact
+        return sv.empty() || (sv.data() >= base && sv.data() + sv.size() <= base + buf_size);
+    };
+
+    const int64_t n_kv = gguf_get_n_kv(meta);
+    for (int64_t i = 0; i < n_kv; ++i) {
+        const enum gguf_type t = gguf_get_kv_type(meta, i);
+        if (t == GGUF_TYPE_STRING) {
+            if (!within(gguf_get_val_str_view(meta, i))) return false;
+        } else if (t == GGUF_TYPE_ARRAY && gguf_get_arr_type(meta, i) == GGUF_TYPE_STRING) {
+            // gguf_set_arr_str replaces the whole KV, so its elements are all
+            // owned or all borrowed - the first non-empty element decides
+            const size_t n = gguf_get_arr_n(meta, i);
+            for (size_t j = 0; j < n; ++j) {
+                const std::string_view sv = gguf_get_arr_str_view(meta, i, j);
+                if (sv.empty()) continue;
+                if (!within(sv)) return false;
+                break;
+            }
+        }
+    }
+    return true;
+}
+
 void translate_clip_metadata(gguf_context * meta, ggml_context * ctx) {
     if (!meta) return;
     if (compat_disabled()) return;

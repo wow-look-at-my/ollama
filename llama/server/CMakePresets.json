@@ -18,7 +18,7 @@
       "inherits": ["default"],
       "binaryDir": "${sourceDir}/../../build/llama-server-cpu",
       "cacheVariables": {
-        "GGML_CPU_ALL_VARIANTS": "ON",
+        "GGML_CPU_ALL_VARIANTS": "OFF",
         "OLLAMA_RUNNER_DIR": ""
       }
     },
