@@ -51,6 +51,22 @@ bool translate_metadata(const llama_model_loader * ml,
                         std::string & arch_name,
                         const char * fname);
 
+// Called from llama_model_loader's constructor right after
+// translate_metadata(), when the metadata was parsed zero-copy out of the
+// retained file mapping (gguf_init_from_buffer_borrow). Handlers replace
+// string KVs through the public gguf_set_* API, which swaps the borrowed
+// views for owned copies that only live as long as the loader's
+// gguf_context — so anything that borrows string views for the model's
+// lifetime (the vocab's token texts / BPE merges) must fall back to
+// copying. Returns true when every string KV payload still points into
+// [buf, buf+buf_size) (empty strings are ignored); a false return tells
+// the loader to clear its meta_borrowed flag. Cost is one pointer
+// comparison per string; for untranslated files nothing was replaced and
+// the zero-copy path is kept.
+bool metadata_string_views_within(const gguf_context * meta,
+                                  const void * buf,
+                                  size_t buf_size);
+
 // Called from llama_model_loader's weights_map population loop. Returns
 // true to drop a tensor from the loader — used to hide embedded vision
 // tensors from the text model's view without modifying the gguf_context.

@@ -43,6 +43,7 @@ import (
 
 	"github.com/ollama/ollama/api"
 	"github.com/ollama/ollama/envconfig"
+	"github.com/ollama/ollama/format"
 	"github.com/ollama/ollama/fs/ggml"
 	"github.com/ollama/ollama/ml"
 )
@@ -120,9 +121,13 @@ type llamaServerRunner struct {
 	memGPU           uint64 // actual GPU buffer size parsed from llama-server logs (bytes)
 	gpuLayers        uint64 // model layers loaded on GPU, parsed from llama-server logs
 	gpuLayerOverflow int    // number of GPU-selected layers partially overflowed to CPU
-	status           *StatusWriter
-	options          api.Options
-	modelPath        string
+	// offloadedLayersParsed is set once an "offloaded N/M layers to GPU" line
+	// has been parsed from llama-server logs, so full-GPU-offload enforcement
+	// can tell "no layers on GPU" apart from "log line not seen".
+	offloadedLayersParsed bool
+	status                *StatusWriter
+	options               api.Options
+	modelPath             string
 	// mediaMarker must match the LLAMA_MEDIA_MARKER value passed to llama-server.
 	// llama.cpp randomizes this by default; Ollama renders stable [img-N] markers
 	// and rewrites them before forwarding the request.
@@ -732,6 +737,13 @@ func NewLlamaServerRunner(
 	kvCacheType string,
 	config LlamaServerConfig,
 ) (LlamaServer, error) {
+	// GPU-only fork: with the default num_gpu (-1, auto) and no GPU to offload
+	// to, llama-server would run the whole model on CPU. Refuse before
+	// spawning the subprocess. An explicit num_gpu (>= 0) is honored.
+	if opts.NumGPU < 0 && !hasGPUDevice(gpus) {
+		return nil, fmt.Errorf("no GPU available to load %s: %w", modelPath, ErrCPUFallbackDisabled)
+	}
+
 	// Check if this is an embedding model
 	arch := f.KV().Architecture()
 	_, isEmbedding := f.KV()[fmt.Sprintf("%s.pooling_type", arch)]
@@ -924,6 +936,12 @@ func (s *llamaServerRunner) Load(ctx context.Context, systemInfo ml.SystemInfo, 
 		}
 	}
 
+	// GPU-only fork: fail the load if llama-server could not offload every
+	// model layer to GPU instead of serving the remainder from CPU.
+	if err := s.verifyFullGPUOffload(); err != nil {
+		return nil, err
+	}
+
 	// Verify that buffer size parsing captured GPU allocations.
 	// If parsing failed (e.g., llama-server log format changed), warn so the
 	// issue is visible in logs when users report problems.
@@ -978,6 +996,67 @@ func (s *llamaServerRunner) shouldRetryMMProjCPUOffload(err error) bool {
 	return !disabled
 }
 
+// hasGPUDevice reports whether any assigned device is an actual GPU (device
+// discovery can report CPU devices on systems without a supported GPU).
+func hasGPUDevice(gpus []ml.DeviceInfo) bool {
+	for _, gpu := range gpus {
+		if !strings.EqualFold(gpu.Library, "cpu") {
+			return true
+		}
+	}
+	return false
+}
+
+// verifyFullGPUOffload enforces this fork's GPU-only serving policy: if
+// llama-server placed any model layer on the CPU (partial offload, or a fit
+// overflow spilling part of a layer), the load fails instead of serving at
+// CPU speed. An explicit user-set num_gpu (>= 0) bypasses the check,
+// including num_gpu 0 for CPU-only.
+func (s *llamaServerRunner) verifyFullGPUOffload() error {
+	if s.options.NumGPU >= 0 {
+		return nil
+	}
+
+	s.memoryMu.RLock()
+	parsed := s.offloadedLayersParsed
+	gpuLayers := s.gpuLayers
+	totalLayers := s.totalLayers
+	gpuLayerOverflow := s.gpuLayerOverflow
+	var gpuFree uint64
+	for _, free := range s.systemFreeAtLoad {
+		gpuFree += free
+	}
+	s.memoryMu.RUnlock()
+
+	if !parsed {
+		// No offload summary line was seen in the llama-server output. Follow
+		// the buffer-size parsing pattern below: warn rather than refuse, so a
+		// llama-server log format change does not break every load.
+		slog.Warn("GPU-only enforcement: no 'offloaded N/M layers to GPU' line was parsed from "+
+			"llama-server logs, unable to verify full GPU offload. This may indicate a change "+
+			"in llama-server's log format.", "model", s.modelPath)
+		return nil
+	}
+
+	if gpuLayers >= totalLayers && gpuLayerOverflow == 0 {
+		return nil
+	}
+
+	if gpuFree == 0 {
+		for _, gpu := range s.gpus {
+			gpuFree += gpu.FreeMemory
+		}
+	}
+
+	required, _ := s.MemorySize()
+	detail := fmt.Sprintf("offloaded %d/%d layers to GPU", gpuLayers, totalLayers)
+	if gpuLayerOverflow > 0 {
+		detail = fmt.Sprintf("%s, %d partially overflowing to CPU", detail, gpuLayerOverflow)
+	}
+	return fmt.Errorf("model requires %s but only %s GPU memory available (%s; set num_gpu explicitly to override): %w",
+		format.HumanBytes2(required), format.HumanBytes2(gpuFree), detail, ErrCPUFallbackDisabled)
+}
+
 func (s *llamaServerRunner) resetLoadAccounting() {
 	s.memoryMu.Lock()
 	defer s.memoryMu.Unlock()
@@ -986,6 +1065,7 @@ func (s *llamaServerRunner) resetLoadAccounting() {
 	s.memGPU = 0
 	s.gpuLayers = 0
 	s.gpuLayerOverflow = 0
+	s.offloadedLayersParsed = false
 	for k := range s.vramByDevice {
 		delete(s.vramByDevice, k)
 	}
@@ -2670,6 +2750,7 @@ func (w *memoryParsingWriter) Write(b []byte) (int, error) {
 				if loadedErr == nil && totalErr == nil {
 					w.runner.gpuLayers = loaded
 					w.runner.totalLayers = total
+					w.runner.offloadedLayersParsed = true
 				}
 			}
 			for _, match := range fitOverflowingLayersRegex.FindAllSubmatch(b, -1) {

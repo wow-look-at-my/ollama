@@ -19,6 +19,12 @@ import (
 
 var ErrLoadRequiredFull = errors.New("unable to load full model on GPU")
 
+// ErrCPUFallbackDisabled is returned when a model cannot be served entirely
+// from GPU memory. This fork is GPU-only: instead of silently spilling layers
+// to CPU at unusable speed, the load fails. An explicit user-set num_gpu
+// (>= 0) bypasses the policy.
+var ErrCPUFallbackDisabled = errors.New("CPU inference is disabled in this fork")
+
 type filteredEnv []string
 
 func (e filteredEnv) LogValue() slog.Value {

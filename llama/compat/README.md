@@ -44,7 +44,14 @@ The layer runs at a small set of loader hook points:
    and mutates the in-memory `gguf_context` and `ggml_context` when a handler
    recognizes an existing published model format. It can also request mmap
    disablement when a handler needs writable backend buffers for transformed
-   tensor data.
+   tensor data. The pinned llama.cpp parses metadata zero-copy out of the
+   retained file mapping (`gguf_init_from_buffer_borrow`) and lets the vocab
+   keep token texts/merges as views into that mapping for the model's
+   lifetime; since handlers replace string KVs with owned copies that die
+   with the loader, the call site follows up with
+   `metadata_string_views_within` and clears the loader's `meta_borrowed`
+   flag (forcing the vocab to copy) when any string payload no longer points
+   into the mapping. Untranslated files keep the zero-copy path.
 2. Main model tensor indexing: `should_skip_tensor` hides embedded projector,
    vision, audio, MTP, or other tensors that the text loader should not claim.
 3. Main model tensor reads: `maybe_load_text_tensor` applies registered

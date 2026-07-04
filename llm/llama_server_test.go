@@ -2823,6 +2823,125 @@ func TestMemoryParsingWriterMemorySizeFullOffload(t *testing.T) {
 	}
 }
 
+func TestVerifyFullGPUOffload(t *testing.T) {
+	tests := []struct {
+		name        string
+		numGPU      int
+		lines       []string
+		wantErr     bool
+		wantMessage string
+	}{
+		{
+			name:   "fully offloaded",
+			numGPU: -1,
+			lines: []string{
+				"llm_load_tensors: offloaded 33/33 layers to GPU\n",
+			},
+			wantErr: false,
+		},
+		{
+			name:   "partial offload fails",
+			numGPU: -1,
+			lines: []string{
+				"llama_model_load: using device CUDA0 (NVIDIA RTX A6000) (0000:01:00.0) - 24000 MiB free\n",
+				"llm_load_tensors: offloaded 22/33 layers to GPU\n",
+			},
+			wantErr:     true,
+			wantMessage: "offloaded 22/33 layers to GPU",
+		},
+		{
+			name:   "cpu only offload fails",
+			numGPU: -1,
+			lines: []string{
+				"llm_load_tensors: offloaded 0/33 layers to GPU\n",
+			},
+			wantErr:     true,
+			wantMessage: "offloaded 0/33 layers to GPU",
+		},
+		{
+			name:   "fit overflow fails despite full layer count",
+			numGPU: -1,
+			lines: []string{
+				"common_params_fit_impl:   - ROCm0 (AMD Radeon RX 6700 XT): 25 layers ( 5 overflowing),  11065 MiB used,   1036 MiB free\n",
+				"llm_load_tensors: offloaded 25/25 layers to GPU\n",
+			},
+			wantErr:     true,
+			wantMessage: "5 partially overflowing to CPU",
+		},
+		{
+			name:   "missing offload line warns but does not fail",
+			numGPU: -1,
+			lines: []string{
+				"llm_load_tensors: offloading 32 repeating layers to GPU\n",
+			},
+			wantErr: false,
+		},
+		{
+			name:   "explicit num_gpu overrides partial offload",
+			numGPU: 10,
+			lines: []string{
+				"llm_load_tensors: offloaded 10/33 layers to GPU\n",
+			},
+			wantErr: false,
+		},
+		{
+			name:    "explicit num_gpu 0 overrides cpu only",
+			numGPU:  0,
+			lines:   []string{},
+			wantErr: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			runner := &llamaServerRunner{
+				modelPath:        "model.gguf",
+				options:          api.Options{Runner: api.Runner{NumGPU: tt.numGPU}},
+				totalLayers:      33,
+				systemFreeAtLoad: make(map[string]uint64),
+			}
+			w := &memoryParsingWriter{inner: io.Discard, runner: runner}
+			for _, line := range tt.lines {
+				if _, err := w.Write([]byte(line)); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			err := runner.verifyFullGPUOffload()
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("verifyFullGPUOffload() = nil, want error")
+				}
+				if !errors.Is(err, ErrCPUFallbackDisabled) {
+					t.Fatalf("verifyFullGPUOffload() = %v, want ErrCPUFallbackDisabled", err)
+				}
+				if tt.wantMessage != "" && !strings.Contains(err.Error(), tt.wantMessage) {
+					t.Fatalf("verifyFullGPUOffload() = %q, want substring %q", err, tt.wantMessage)
+				}
+			} else if err != nil {
+				t.Fatalf("verifyFullGPUOffload() = %v, want nil", err)
+			}
+		})
+	}
+}
+
+func TestNewLlamaServerRunnerRefusesCPUOnly(t *testing.T) {
+	// With the default num_gpu (-1) and no GPU devices, the runner must refuse
+	// to start before spawning llama-server (the model metadata is never read).
+	_, err := NewLlamaServerRunner(nil, "model.gguf", nil, nil, nil,
+		api.Options{Runner: api.Runner{NumGPU: -1}}, 1, "", LlamaServerConfig{})
+	if !errors.Is(err, ErrCPUFallbackDisabled) {
+		t.Fatalf("NewLlamaServerRunner() error = %v, want ErrCPUFallbackDisabled", err)
+	}
+
+	cpuOnly := []ml.DeviceInfo{{DeviceID: ml.DeviceID{Library: "cpu"}}}
+	_, err = NewLlamaServerRunner(cpuOnly, "model.gguf", nil, nil, nil,
+		api.Options{Runner: api.Runner{NumGPU: -1}}, 1, "", LlamaServerConfig{})
+	if !errors.Is(err, ErrCPUFallbackDisabled) {
+		t.Fatalf("NewLlamaServerRunner() error = %v, want ErrCPUFallbackDisabled", err)
+	}
+}
+
 func TestVRAMByGPU(t *testing.T) {
 	runner := &llamaServerRunner{
 		vramByDevice: map[string]uint64{
