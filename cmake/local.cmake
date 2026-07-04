@@ -515,7 +515,10 @@ if(OLLAMA_HAVE_LLAMA_SERVER)
         list(APPEND _cpu_args
             -DBUILD_SHARED_LIBS=ON
             -DGGML_BACKEND_DL=ON
-            -DGGML_CPU_ALL_VARIANTS=ON)
+            # GPU-only fork: ship a single baseline ggml-cpu library (the CPU
+            # backend is ggml's mandatory host-side component) instead of the
+            # per-microarch GGML_CPU_ALL_VARIANTS inference payload set.
+            -DGGML_CPU_ALL_VARIANTS=OFF)
         if(WIN32)
             list(APPEND _cpu_args -DGGML_OPENMP=ON)
         endif()

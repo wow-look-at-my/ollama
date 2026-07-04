@@ -663,7 +663,10 @@ func (s *Scheduler) load(req *LlmRequest, systemInfo ml.SystemInfo, gpus []ml.De
 				return true
 			}
 		}
-		if otherLoaded && !req.oomRetryAttempted && llm.IsOutOfMemory(err) {
+		// CPU fallback is disabled in this fork, so a partial GPU offload next
+		// to other loaded models is retried like an OOM: evict everything else
+		// once so a fresh llama-server can place all layers on GPU.
+		if otherLoaded && !req.oomRetryAttempted && (llm.IsOutOfMemory(err) || errors.Is(err, llm.ErrCPUFallbackDisabled)) {
 			req.oomRetryAttempted = true
 			slog.Warn("llama-server load failed; evicting all other models and retrying once", "model", req.model.ModelPath, "error", err)
 			return true

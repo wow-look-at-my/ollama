@@ -244,7 +244,8 @@ endif()
 #   lib/ollama/libggml-base.so
 #   lib/ollama/libggml.so
 #   lib/ollama/libllama.so
-#   lib/ollama/libggml-cpu*.so  (all CPU variants)
+#   lib/ollama/libggml-cpu*.so  (single baseline CPU backend; GPU-only fork
+#                                does not ship GGML_CPU_ALL_VARIANTS)
 #
 # GPU build (OLLAMA_RUNNER_DIR="cuda_v12" etc.):
 #   lib/ollama/cuda_v12/libggml-cuda.so  (GPU backend only)
@@ -557,11 +558,12 @@ else()
     # do not depend on host-global redistributables.
     ollama_install_windows_runtime_dlls("${_base_dest}")
 
-    # CPU backend modules (multiple variants from GGML_CPU_ALL_VARIANTS).
-    # install(CODE) runs at install time so CMAKE_INSTALL_CONFIG_NAME is
-    # available for multi-config generators. llama.cpp creates variant module
-    # filenames from detected CPU features, so glob the final install payload
-    # rather than hard-coding an upstream target list.
+    # CPU backend modules. This fork builds with GGML_CPU_ALL_VARIANTS=OFF, so
+    # this is the single baseline ggml-cpu module (plus ggml-blas when built) —
+    # the mandatory host-side backend llama-server needs to start; inference
+    # runs on the GPU backends. install(CODE) runs at install time so
+    # CMAKE_INSTALL_CONFIG_NAME is available for multi-config generators, and
+    # the glob keeps working for whatever module filenames llama.cpp produces.
     install(CODE "
         set(_backend_dirs \"${CMAKE_BINARY_DIR}/bin\")
         if(DEFINED CMAKE_INSTALL_CONFIG_NAME AND NOT CMAKE_INSTALL_CONFIG_NAME STREQUAL \"\")
