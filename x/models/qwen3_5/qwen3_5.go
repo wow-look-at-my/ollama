@@ -127,7 +127,6 @@ type GatedDeltaNet struct {
 	OutProj    nn.LinearLayer
 
 	Conv1D     *nn.Conv1d
-	ConvWeight *mlx.Array
 	NormWeight *mlx.Array
 	DtBias     *mlx.Array
 	ALog       *mlx.Array
@@ -762,31 +761,6 @@ func sanitizeConvWeight(w *mlx.Array) *mlx.Array {
 	return w
 }
 
-func depthwiseConv1dKernelWeight(w *mlx.Array) *mlx.Array {
-	if w == nil {
-		return nil
-	}
-	switch w.NumDims() {
-	case 2:
-		// qwen3.5 manual path stores [C, K]; MLX grouped conv expects [Cout, K, Cin/groups].
-		// For depthwise conv (groups=C), that is [C, K, 1].
-		return mlx.ExpandDims(w, 2)
-	case 3:
-		switch {
-		case w.Dim(2) == 1:
-			// [C, K, 1]
-			return w
-		case w.Dim(1) == 1:
-			// [C, 1, K] -> [C, K, 1]
-			return mlx.Transpose(w, 0, 2, 1)
-		case w.Dim(0) == 1:
-			// [1, K, C] -> [C, K, 1]
-			return mlx.Transpose(w, 2, 1, 0)
-		}
-	}
-	return nil
-}
-
 func shouldShiftNormKey(key string) bool {
 	for _, suffix := range []string{
 		".input_layernorm.weight",
@@ -897,9 +871,9 @@ func (m *Model) LoadWeights(tensors map[string]*mlx.Array) error {
 			lin.InProjBA = linears.Make(layerPrefix + ".linear_attn.in_proj_ba")
 			lin.OutProj = linears.Make(layerPrefix + ".linear_attn.out_proj")
 
-			lin.ConvWeight = sanitizeConvWeight(tensors[layerPrefix+".linear_attn.conv1d.weight"])
-			if lin.ConvWeight == nil {
-				lin.ConvWeight = sanitizeConvWeight(tensors[layerPrefix+".linear_attn.conv1d"])
+			convWeight := sanitizeConvWeight(tensors[layerPrefix+".linear_attn.conv1d.weight"])
+			if convWeight == nil {
+				convWeight = sanitizeConvWeight(tensors[layerPrefix+".linear_attn.conv1d"])
 			}
 			lin.NormWeight, _ = tensorAny(tensors,
 				layerPrefix+".linear_attn.norm.weight",
@@ -922,15 +896,15 @@ func (m *Model) LoadWeights(tensors map[string]*mlx.Array) error {
 			if (!hasSplit && !hasCombined) || lin.OutProj == nil {
 				return fmt.Errorf("layer %d: missing linear attention projections", i)
 			}
-			if lin.ConvWeight == nil || lin.NormWeight == nil || lin.DtBias == nil || lin.ALog == nil || lin.AExp == nil {
+			if convWeight == nil || lin.NormWeight == nil || lin.DtBias == nil || lin.ALog == nil || lin.AExp == nil {
 				return fmt.Errorf("layer %d: missing linear attention state tensors", i)
 			}
-			if lin.ConvWeight.NumDims() != 2 {
-				return fmt.Errorf("layer %d: conv1d weight must be 2D after sanitization, got %dD", i, lin.ConvWeight.NumDims())
+			if convWeight.NumDims() != 2 {
+				return fmt.Errorf("layer %d: conv1d weight must be 2D after sanitization, got %dD", i, convWeight.NumDims())
 			}
-			if convKernel := depthwiseConv1dKernelWeight(lin.ConvWeight); convKernel != nil {
-				lin.Conv1D = nn.NewConv1d(convKernel, nil, 1, 0, 1, int32(lin.ConvWeight.Dim(0)))
-			}
+			// MLX grouped conv expects [Cout, K, Cin/groups]; for depthwise
+			// conv (groups=C) the [C, K] kernel becomes [C, K, 1].
+			lin.Conv1D = nn.NewConv1d(mlx.ExpandDims(convWeight, 2), nil, 1, 0, 1, int32(convWeight.Dim(0)))
 
 			layer.Linear = lin
 		} else {
@@ -1165,18 +1139,24 @@ func (g *GatedDeltaNet) Forward(x *mlx.Array, b *batch.Batch, c cache.Cache, B, 
 	}
 	convTail := cfg.LinearConvKernelDim - 1
 	var rc *cache.RecurrentCache
-	var rec nn.RecurrentOption
+	opts := make([]nn.RecurrentOption, 0, 2)
 	if typed, ok := c.(*cache.RecurrentCache); ok {
 		rc = typed
-		rec = nn.WithRecurrentHistory(rc.Get(b, x.DType()))
+		opts = append(opts, nn.WithRecurrentHistory(rc.Get(b, x.DType())))
+		// When the cache has scheduled per-token snapshots, segment the
+		// recurrent kernels at the interior offsets so each boundary state
+		// can be captured.
+		if splits := rc.SnapshotSplits(int(L)); len(splits) > 0 {
+			opts = append(opts, nn.WithSnapshotSplits(splits))
+		}
 	} else {
-		rec = nn.WithRecurrentState(
+		opts = append(opts, nn.WithRecurrentState(
 			mlx.Zeros(x.DType(), int(B), int(convTail), qkv.Dim(2)),
 			mlx.Zeros(mlx.DTypeFloat32, int(B), int(cfg.LinearNumValueHeads), int(cfg.LinearValueHeadDim), int(cfg.LinearKeyHeadDim)),
-		)
+		))
 	}
 
-	convOut, nextConv := nn.CausalConv1D(b, qkv, g.Conv1D, g.ConvWeight, int(convTail), rec)
+	convOut, convStates := nn.CausalConv1D(b, qkv, g.Conv1D, int(convTail), opts...)
 	convOut = mlx.SiLU(convOut)
 
 	keyDim := cfg.LinearNumKeyHeads * cfg.LinearKeyHeadDim
@@ -1198,14 +1178,14 @@ func (g *GatedDeltaNet) Forward(x *mlx.Array, b *batch.Batch, c cache.Cache, B, 
 
 	betaGate := mlx.Sigmoid(beta)
 
-	out, state := nn.GatedDelta(b, q, k, v, gDecay, betaGate, rec)
+	out, deltaStates := nn.GatedDelta(b, q, k, v, gDecay, betaGate, opts...)
 	outDType := out.DType()
 	out = mlx.RMSNormFn(out, g.NormWeight, cfg.RMSNormEps)
 	out = mlx.Mul(out.AsType(mlx.DTypeFloat32), mlx.SiLU(z.AsType(mlx.DTypeFloat32))).AsType(outDType)
 	out = mlx.Reshape(out, B, L, valueDim)
 	out = g.OutProj.Forward(out)
 	if rc != nil {
-		rc.Put(b, nextConv, state)
+		rc.Put(b, convStates, deltaStates)
 	}
 	return out
 }

@@ -1,0 +1,111 @@
+diff --git a/src/llama-model-loader.cpp b/src/llama-model-loader.cpp
+index b1f9a33..759c04c 100644
+--- a/src/llama-model-loader.cpp
++++ b/src/llama-model-loader.cpp
+@@ -4,6 +4,7 @@
+ #include "ggml.h"
+ #include "gguf.h"
+ #include "llama-hparams.h"
++#include "llama-ollama-compat.h"
+ 
+ #include <algorithm>
+ #include <array>
+@@ -604,6 +605,13 @@ llama_model_loader::llama_model_loader(
+         }
+ 
+         get_key(llm_kv(LLM_KV_GENERAL_ARCHITECTURE), arch_name, false);
++        if (llama_ollama_compat::translate_metadata(this, metadata, ctx, arch_name, fname.c_str())) use_mmap = false;
++        // translate_metadata can replace string KVs with owned copies; when the
++        // metadata was parsed zero-copy, any such payload is no longer a view
++        // into mappings[0] and the vocab must copy instead of borrowing
++        if (meta_borrowed && !llama_ollama_compat::metadata_string_views_within(metadata, mappings.back()->addr(), mappings.back()->size())) {
++            meta_borrowed = false;
++        }
+         llm_kv = LLM_KV(llm_arch_from_string(arch_name));
+ 
+         contexts.emplace_back(ctx);
+@@ -613,6 +621,9 @@ llama_model_loader::llama_model_loader(
+         // so we build a unified tensors index for weights.
+         for (ggml_tensor * cur = ggml_get_first_tensor(ctx); cur; cur = ggml_get_next_tensor(ctx, cur)) {
+             std::string tensor_name = std::string(cur->name);
++            if (llama_ollama_compat::should_skip_tensor(this, tensor_name.c_str())) {
++                continue;
++            }
+             // make sure there is no duplicated tensor names
+             if (weights_map.find(tensor_name) != weights_map.end()) {
+                 throw std::runtime_error(format("invalid model: tensor '%s' is duplicated", ggml_get_name(cur)));
+@@ -733,6 +744,9 @@ llama_model_loader::llama_model_loader(
+         // Save tensors data offset info of the main file.
+         for (ggml_tensor * cur = ggml_get_first_tensor(ctx); cur; cur = ggml_get_next_tensor(ctx, cur)) {
+             std::string tensor_name = std::string(cur->name);
++            if (llama_ollama_compat::should_skip_tensor(this, tensor_name.c_str())) {
++                continue;
++            }
+             // make sure there is no duplicated tensor names
+             if (weights_map.find(tensor_name) != weights_map.end()) {
+                 throw std::runtime_error(format("invalid model: tensor '%s' is duplicated", ggml_get_name(cur)));
+@@ -1476,6 +1490,7 @@ void llama_model_loader::get_mapping_range(size_t * first, size_t * last, void *
+ 
+ void llama_model_loader::load_data_for(struct ggml_tensor * cur) const {
+     const auto & w = require_weight(ggml_get_name(cur));
++    if (llama_ollama_compat::maybe_load_text_tensor(this, cur, w.offs)) return;
+ 
+     if (use_mmap) {
+         const auto & mapping = mappings.at(w.idx);
+@@ -1637,6 +1652,7 @@ bool llama_model_loader::load_all_data(
+         }
+ 
+         size_t n_size = ggml_nbytes(cur);
++        if (llama_ollama_compat::maybe_load_text_tensor(this, cur, weight->offs)) continue;
+ 
+         if (use_mmap) {
+             const auto & mapping = mappings.at(weight->idx);
+diff --git a/tools/mtmd/clip.cpp b/tools/mtmd/clip.cpp
+index b886650..764c38a 100644
+--- a/tools/mtmd/clip.cpp
++++ b/tools/mtmd/clip.cpp
+@@ -10,6 +10,8 @@
+ #include "ggml-backend.h"
+ #include "gguf.h"
+ 
++#include "llama-ollama-compat.h"
++
+ #include <algorithm>
+ #include <cassert>
+ #include <cmath>
+@@ -1072,6 +1074,11 @@ struct clip_model_loader {
+ 
+         ctx_meta.reset(meta);
+ 
++        // If this is an Ollama-format monolithic GGUF (text + embedded
++        // vision), translate its metadata and tensor names into the
++        // upstream mmproj shape so the rest of this loader runs unchanged.
++        llama_ollama_compat::translate_clip_metadata(ctx_gguf.get(), meta);
++
+         const int n_tensors = gguf_get_n_tensors(ctx_gguf.get());
+ 
+         // print gguf info
+@@ -2840,6 +2847,7 @@ struct clip_model_loader {
+                     auto it_off = tensor_offset.find(t->name);
+                     GGML_ASSERT(it_off != tensor_offset.end() && "no offset for tensor");
+                     const size_t offset = it_off->second;
++                    if (llama_ollama_compat::maybe_load_tensor(cur, fname.c_str(), offset, buft)) continue;
+                     fin.seekg(offset, std::ios::beg);
+                     if (!fin) {
+                         throw std::runtime_error(string_format("%s: failed to seek for tensor %s\n", __func__, t->name));
+@@ -4550,6 +4558,15 @@ bool clip_image_batch_encode(clip_ctx * ctx, int n_threads, const clip_image_f32
+ }
+ 
+ int clip_n_mmproj_embd(const struct clip_ctx * ctx) {
++    const auto projector_type = PROJECTOR_TYPE_NAMES.find(ctx->model.proj_type);
++    if (projector_type != PROJECTOR_TYPE_NAMES.end()) {
++        if (int n = llama_ollama_compat::maybe_clip_mmproj_embd(
++                projector_type->second.c_str(),
++                ctx->model.hparams.projection_dim); n > 0) {
++            return n;
++        }
++    }
++
+     switch (ctx->model.proj_type) {
+         case PROJECTOR_TYPE_LDP:
+             return ctx->model.mm_model_block_1_block_2_1_b->ne[0];

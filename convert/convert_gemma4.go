@@ -573,24 +573,16 @@ func (p *gemma4Model) Replacements() []string {
 
 		// Layer scalar
 		"layer_scalar", "layer_output_scale.weight",
-
-		// Draft (MTP assistant) model tensors
-		"draft.pre_projection", "draft.pre_projection",
-		"draft.post_projection", "draft.post_projection",
-		"draft.model.embed_tokens", "draft.token_embd",
-		"draft.model.norm", "draft.output_norm",
-		"draft.model.layers", "draft.blk",
-		"draft.masked_embedding.centroids", "draft.centroids",
-		"draft.masked_embedding.token_ordering", "draft.token_ordering",
 	}
 }
 
 type gemma4AssistantConfig struct {
-	UseOrderedEmbeddings     bool   `json:"use_ordered_embeddings"`
-	NumCentroids             uint32 `json:"num_centroids"`
-	CentroidIntermediateTopK uint32 `json:"centroid_intermediate_top_k"`
-	RequiresTargetArch       string `json:"requires_target_arch"`
-	TextConfig               struct {
+	// BackboneHiddenSize is the hidden size of the target ("backbone") model the
+	// assistant was trained against. Google publishes it at the top level of the
+	// assistant's config.json; accept a text_config copy too.
+	BackboneHiddenSize uint32 `json:"backbone_hidden_size"`
+	TextConfig         struct {
+		BackboneHiddenSize     uint32   `json:"backbone_hidden_size"`
 		NumHiddenLayers        uint32   `json:"num_hidden_layers"`
 		HiddenSize             uint32   `json:"hidden_size"`
 		MaxPositionEmbeddings  uint32   `json:"max_position_embeddings"`
@@ -603,8 +595,6 @@ type gemma4AssistantConfig struct {
 		RMSNormEps             float32  `json:"rms_norm_eps"`
 		SlidingWindow          uint32   `json:"sliding_window"`
 		NumKVSharedLayers      uint32   `json:"num_kv_shared_layers"`
-		AttentionKEqV          bool     `json:"attention_k_eq_v"`
-		FinalLogitSoftcapping  float32  `json:"final_logit_softcapping"`
 		LayerTypes             []string `json:"layer_types"`
 		RopeParameters         map[string]*struct {
 			RopeTheta           float32  `json:"rope_theta"`
@@ -613,83 +603,26 @@ type gemma4AssistantConfig struct {
 	} `json:"text_config"`
 }
 
-func (p *gemma4Model) DraftKV(draftFsys fs.FS) (KV, error) {
-	bts, err := fs.ReadFile(draftFsys, "config.json")
-	if err != nil {
-		return nil, fmt.Errorf("read draft config.json: %w", err)
+// backboneHiddenSize returns the assistant config's declared target hidden
+// size, or 0 when the config does not carry one.
+func (c *gemma4AssistantConfig) backboneHiddenSize() uint32 {
+	if c.BackboneHiddenSize > 0 {
+		return c.BackboneHiddenSize
 	}
-	bts = sanitizeNonFiniteJSON(bts)
-
-	var cfg gemma4AssistantConfig
-	if err := json.Unmarshal(bts, &cfg); err != nil {
-		return nil, fmt.Errorf("parse draft config.json: %w", err)
-	}
-
-	tc := cfg.TextConfig
-	kv := make(KV)
-
-	kv["draft.block_count"] = tc.NumHiddenLayers
-	kv["draft.embedding_length"] = tc.HiddenSize
-
-	if tc.NumAttentionHeads > 0 {
-		kv["draft.attention.head_count"] = tc.NumAttentionHeads
-	}
-	if tc.HeadDim > 0 {
-		kv["draft.attention.key_length_swa"] = tc.HeadDim
-		kv["draft.attention.value_length_swa"] = tc.HeadDim
-	}
-	if tc.GlobalHeadDim > 0 {
-		kv["draft.attention.key_length"] = tc.GlobalHeadDim
-		kv["draft.attention.value_length"] = tc.GlobalHeadDim
-	}
-	if tc.RMSNormEps > 0 {
-		kv["draft.attention.layer_norm_rms_epsilon"] = tc.RMSNormEps
-	}
-	if tc.IntermediateSize > 0 {
-		kv["draft.feed_forward_length"] = tc.IntermediateSize
-	}
-
-	if len(tc.LayerTypes) > 0 {
-		kv["draft.attention.sliding_window_pattern"] = slices.Collect(func(yield func(bool) bool) {
-			for _, lt := range tc.LayerTypes {
-				if !yield(lt == "sliding_attention") {
-					break
-				}
-			}
-		})
-	}
-
-	if rp, ok := tc.RopeParameters["full_attention"]; ok && rp != nil {
-		kv["draft.rope.freq_base"] = rp.RopeTheta
-		if rp.PartialRotaryFactor != nil {
-			rotDims := uint32(float32(tc.GlobalHeadDim) * *rp.PartialRotaryFactor)
-			kv["draft.rope.dimension_count"] = rotDims
-		}
-	}
-	if rp, ok := tc.RopeParameters["sliding_attention"]; ok && rp != nil {
-		kv["draft.rope.freq_base_swa"] = rp.RopeTheta
-	}
-
-	kv["draft.use_ordered_embeddings"] = cfg.UseOrderedEmbeddings
-	if cfg.NumCentroids > 0 {
-		kv["draft.num_centroids"] = cfg.NumCentroids
-	}
-	if cfg.CentroidIntermediateTopK > 0 {
-		kv["draft.centroid_intermediate_top_k"] = cfg.CentroidIntermediateTopK
-	}
-
-	return kv, nil
+	return c.TextConfig.BackboneHiddenSize
 }
 
 // gemma4AssistantModel converts a Gemma 4 MTP "assistant" (drafter) checkpoint
-// into a standalone GGUF with general.architecture = "gemma4_assistant". Unlike
-// the qwen NextN drafter, the Gemma 4 assistant is a separate model that the
-// runtime loads via --mtp-head and attaches to the target: it cross-attends the
-// target's KV cache (so attention is Q-only), uses the target's last-layer
-// activations via a pre/post projection, and has a centroid-routed LM head.
+// into a standalone GGUF with general.architecture = "gemma4-assistant" — the
+// dialect llama.cpp's own LLM_ARCH_GEMMA4_ASSISTANT loader expects
+// (src/models/gemma4-assistant.cpp; reference converter: conversion/gemma.py
+// Gemma4AssistantModel). The runtime serves it as a --spec-type draft-mtp
+// draft model (--spec-draft-model): the assistant shares the target's KV cache
+// (so its attention is Q-only) and consumes the target's last-layer activations
+// via the nextn pre/post projections.
 type gemma4AssistantModel struct {
 	cfg           gemma4AssistantConfig
-	nEmbdBackbone uint32 // target model n_embd; pre_projection maps from 2*this
+	nEmbdBackbone uint32 // target model n_embd; emitted as embedding_length_out
 	vocabSize     uint32
 }
 
@@ -699,11 +632,11 @@ func (*gemma4AssistantModel) Replacements() []string {
 		".linear.weight", ".weight",
 		".linear.bias", ".bias",
 
-		// MTP head: target-activation projections, embeddings, centroid LM head
-		"pre_projection", "mtp.pre_projection",
-		"post_projection", "mtp.post_projection",
-		"masked_embedding.centroids", "mtp.centroids",
-		"masked_embedding.token_ordering", "mtp.token_ordering",
+		// Target-activation projections. (The masked-embedding centroid head is
+		// NOT mapped: those tensors are skipped in Tensors — llama.cpp ignores
+		// only its own masked_embd_* names and hard-fails on anything else.)
+		"pre_projection", "nextn.pre_projection",
+		"post_projection", "nextn.post_projection",
 		"model.embed_tokens", "token_embd",
 		"model.norm", "output_norm",
 		"model.layers", "blk",
@@ -725,18 +658,51 @@ func (*gemma4AssistantModel) Replacements() []string {
 		"pre_feedforward_layernorm", "ffn_norm",
 		"post_feedforward_layernorm", "post_ffw_norm",
 
-		// Per-layer output scalar
+		// Per-layer output scalar (required on every layer by the loader)
 		"layer_scalar", "layer_output_scale.weight",
 	}
+}
+
+// hasFullAttentionLayer reports whether any layer uses full (non-sliding)
+// attention. Only those layers reference the global rope_freqs tensor.
+func (m *gemma4AssistantModel) hasFullAttentionLayer() bool {
+	for _, lt := range m.cfg.TextConfig.LayerTypes {
+		if lt != "sliding_attention" {
+			return true
+		}
+	}
+	return false
 }
 
 func (m *gemma4AssistantModel) Tensors(ts []Tensor) []*ggml.Tensor {
 	out := make([]*ggml.Tensor, 0, len(ts)+1)
 	for _, t := range ts {
+		// Skip the centroid LM head ("efficient embedder"): llama.cpp's
+		// gemma4-assistant loader has no reader for it and hard-fails on any
+		// unexpected tensor ("wrong number of tensors"). Mirrors the reference
+		// converter's filter_tensors, which drops masked_embedding.* outright.
+		if strings.Contains(t.Name(), "masked_embedding") {
+			continue
+		}
 		shape := t.Shape()
 		// layer_output_scale is a scalar in the checkpoint; emit it as 1-D.
 		if len(shape) == 0 {
 			shape = []uint64{1}
+		}
+		// Trim out-of-vocabulary padding rows from the embedding table so the
+		// tensor matches the tokenizer the GGUF carries ({n_embd, n_vocab} in
+		// the loader), like the reference converter's OOV trim.
+		if vocabSize := uint64(m.vocabSize); vocabSize > 0 && t.Name() == "token_embd.weight" && len(shape) >= 2 && shape[0] > vocabSize {
+			shape = slices.Clone(shape)
+			embdDim := shape[1]
+			shape[0] = vocabSize
+			t.SetRepacker(func(_ string, data []float32, _ []uint64) ([]float32, error) {
+				n := vocabSize * embdDim
+				if uint64(len(data)) < n {
+					return nil, fmt.Errorf("gemma4 assistant token_embd.weight has %d values, need %d", len(data), n)
+				}
+				return data[:n], nil
+			})
 		}
 		out = append(out, &ggml.Tensor{
 			Name:     t.Name(),
@@ -748,12 +714,14 @@ func (m *gemma4AssistantModel) Tensors(ts []Tensor) []*ggml.Tensor {
 
 	// Generate the single global rope_freqs.weight for proportional RoPE on the
 	// full-attention (non-SWA) layers, exactly like the base gemma4 converter.
-	// The gemma4_assistant arch creates blk.%d.rope_freqs per non-SWA layer, but
+	// The gemma4-assistant arch creates blk.%d.rope_freqs per non-SWA layer, but
 	// the tensor-name template "rope_freqs" has no %d, so every layer resolves to
 	// the same name "rope_freqs.weight"; the first non-SWA layer loads it and the
-	// rest reuse it (TENSOR_DUPLICATED). So the file needs exactly one copy.
+	// rest reuse it (TENSOR_DUPLICATED). So the file needs exactly one copy — and
+	// only when a full-attention layer exists at all (an unreferenced extra
+	// tensor would fail the load).
 	tc := m.cfg.TextConfig
-	if tc.GlobalHeadDim > 0 {
+	if tc.GlobalHeadDim > 0 && m.hasFullAttentionLayer() {
 		globalFreqsSize := tc.GlobalHeadDim / 2
 
 		partialRotaryFactor := float32(0.25)
@@ -786,25 +754,40 @@ func (m *gemma4AssistantModel) KV(baseKV ggml.KV) ggml.KV {
 	kv := ggml.KV{}
 
 	// Copy the tokenizer (and quantization provenance) verbatim from the base
-	// model. The runtime compares the assistant's vocab text against the target's
-	// (llama_mtp_vocab_matches), so the standalone assistant GGUF must carry the
-	// full tokenizer. A fresh KV (rather than maps.Clone) avoids dragging in stale
-	// gemma4.* hparams that don't apply to the assistant.
+	// model. The runtime compares the assistant's vocab against the target's
+	// (common_speculative_are_compatible: vocab type, bos/eos, token text), so
+	// the standalone assistant GGUF must carry the full tokenizer. A fresh KV
+	// (rather than maps.Clone) avoids dragging in stale gemma4.* hparams that
+	// don't apply to the assistant.
 	for k, v := range baseKV {
 		if strings.HasPrefix(k, "tokenizer.") {
 			kv[k] = v
 		}
 	}
+	// The Ollama gemma4 target GGUF writes tokenizer.ggml.model = "llama" and
+	// relies on the llama/compat load-time shim to flip it to "gemma4" (BPE).
+	// That shim only runs for arch "gemma4" — the assistant loads through the
+	// stock llama.cpp path — so bake the correct upstream value directly, like
+	// llama.cpp's own converter does (add_tokenizer_model("gemma4")). Without
+	// this the assistant's vocab type (SPM) would not match the target's (BPE)
+	// and speculative decoding would be rejected.
+	kv["tokenizer.ggml.model"] = "gemma4"
 	if v, ok := baseKV["general.quantization_version"]; ok {
 		kv["general.quantization_version"] = v
 	}
-	kv["general.architecture"] = "gemma4_assistant"
+	kv["general.architecture"] = "gemma4-assistant"
 	kv["general.file_type"] = uint32(1) // F16; re-quantized by createModel if requested
 
-	const p = "gemma4_assistant."
-	kv[p+"vocab_size"] = m.vocabSize
+	const p = "gemma4-assistant."
 	kv[p+"block_count"] = tc.NumHiddenLayers
 	kv[p+"embedding_length"] = tc.HiddenSize
+	// embedding_length_out carries the target ("backbone") hidden size: the
+	// nextn projections map between the two widths. The loader requires it to
+	// differ from embedding_length.
+	kv[p+"embedding_length_out"] = m.nEmbdBackbone
+	// nextn_predict_layers must equal block_count: the loader reads it as
+	// optional but asserts n_layer_nextn == n_layer (a 0 default would abort).
+	kv[p+"nextn_predict_layers"] = tc.NumHiddenLayers
 	kv[p+"context_length"] = tc.MaxPositionEmbeddings
 	if tc.IntermediateSize > 0 {
 		kv[p+"feed_forward_length"] = tc.IntermediateSize
@@ -829,16 +812,16 @@ func (m *gemma4AssistantModel) KV(baseKV ggml.KV) ggml.KV {
 	}
 	kv[p+"attention.key_length"] = tc.GlobalHeadDim
 	kv[p+"attention.value_length"] = tc.GlobalHeadDim
+	// key/value_length_swa are read as required keys by the gemma4-assistant
+	// loader (src/models/gemma4-assistant.cpp), as are layer_norm_rms_epsilon,
+	// sliding_window, and sliding_window_pattern below.
 	kv[p+"attention.key_length_swa"] = tc.HeadDim
 	kv[p+"attention.value_length_swa"] = tc.HeadDim
 	kv[p+"attention.layer_norm_rms_epsilon"] = tc.RMSNormEps
-	// sliding_window is read as a required key by the gemma4_assistant loader
-	// (src/models/gemma4-assistant.cpp), so always emit it.
 	kv[p+"attention.sliding_window"] = tc.SlidingWindow
 	if tc.NumKVSharedLayers > 0 {
 		kv[p+"attention.shared_kv_layers"] = tc.NumKVSharedLayers
 	}
-	kv[p+"attention.k_eq_v"] = tc.AttentionKEqV
 
 	// Per-layer sliding-window pattern (len == n_layer); required by the loader.
 	if len(tc.LayerTypes) > 0 {
@@ -851,32 +834,19 @@ func (m *gemma4AssistantModel) KV(baseKV ggml.KV) ggml.KV {
 
 	if rp, ok := tc.RopeParameters["full_attention"]; ok && rp != nil {
 		kv[p+"rope.freq_base"] = rp.RopeTheta
-		kv[p+"rope.dimension_count"] = tc.GlobalHeadDim
 	}
+	// dimension_count is the full global head dim; the partial rotation is
+	// expressed through the generated rope_freqs freq-factors (1e30 disables
+	// the unrotated dims), matching llama.cpp's converter.
+	kv[p+"rope.dimension_count"] = tc.GlobalHeadDim
 	if rp, ok := tc.RopeParameters["sliding_attention"]; ok && rp != nil {
 		kv[p+"rope.freq_base_swa"] = rp.RopeTheta
-		// n_rot for SWA layers defaults to n_rot_full (the global head dim) in the
-		// loader (llama-model.cpp); the SWA q heads are head_dim-wide, so without
-		// this the drafter would rope global_head_dim dims on head_dim-wide heads.
-		kv[p+"rope.dimension_count_swa"] = tc.HeadDim
 	}
-
-	if tc.FinalLogitSoftcapping > 0 {
-		kv[p+"final_logit_softcapping"] = tc.FinalLogitSoftcapping
-	}
-
-	// MTP assistant-specific metadata.
-	kv[p+"n_embd_backbone"] = m.nEmbdBackbone
-	kv[p+"use_ordered_embeddings"] = m.cfg.UseOrderedEmbeddings
-	if m.cfg.NumCentroids > 0 {
-		kv[p+"n_centroids"] = m.cfg.NumCentroids
-	}
-	if m.cfg.CentroidIntermediateTopK > 0 {
-		kv[p+"centroid_top_k"] = m.cfg.CentroidIntermediateTopK
-	}
-	if m.cfg.RequiresTargetArch != "" {
-		kv[p+"requires_target_arch"] = m.cfg.RequiresTargetArch
-	}
+	// n_rot for SWA layers defaults to n_rot_full (the global head dim) in the
+	// loader (llama-model.cpp); the SWA q heads are head_dim-wide, so without
+	// this the drafter would silently rope global_head_dim dims on
+	// head_dim-wide heads. Always emit it.
+	kv[p+"rope.dimension_count_swa"] = tc.HeadDim
 
 	return kv
 }
@@ -889,22 +859,23 @@ func (m *gemma4AssistantModel) validateTensors(tensors []*ggml.Tensor) error {
 
 	required := []string{
 		"token_embd.weight",
-		"mtp.pre_projection.weight",
-		"mtp.post_projection.weight",
+		"nextn.pre_projection.weight",
+		"nextn.post_projection.weight",
 		"output_norm.weight",
 	}
 	for i := range int(m.cfg.TextConfig.NumHiddenLayers) {
 		for _, suffix := range []string{
 			"attn_norm.weight", "attn_q.weight", "attn_output.weight",
 			"attn_q_norm.weight", "post_attention_norm.weight",
+			// layer_output_scale is required on every layer by llama.cpp's
+			// gemma4-assistant loader (the old fork dialect treated it as
+			// optional).
+			"layer_output_scale.weight",
 			"ffn_norm.weight", "ffn_gate.weight", "ffn_up.weight",
 			"ffn_down.weight", "post_ffw_norm.weight",
 		} {
 			required = append(required, fmt.Sprintf("blk.%d.%s", i, suffix))
 		}
-	}
-	if m.cfg.UseOrderedEmbeddings {
-		required = append(required, "mtp.centroids.weight")
 	}
 
 	var missing []string
@@ -920,12 +891,13 @@ func (m *gemma4AssistantModel) validateTensors(tensors []*ggml.Tensor) error {
 }
 
 // ConvertGemma4MTPDraft converts a Gemma 4 MTP assistant (drafter) safetensors
-// checkpoint into a standalone GGUF with general.architecture = "gemma4_assistant".
-// baseKV is the already-converted target model's KV; it supplies the tokenizer
-// (the runtime requires the assistant's vocab to match the target's) and
-// n_embd_backbone (the target's embedding length). The output contains only the
-// assistant's own tensors — it is loaded separately via --mtp-head, not embedded
-// into the target GGUF.
+// checkpoint into a standalone GGUF with general.architecture =
+// "gemma4-assistant" — llama.cpp's own Gemma 4 drafter dialect. baseKV is the
+// already-converted target model's KV; it supplies the tokenizer (the runtime
+// requires the assistant's vocab to match the target's) and the target's
+// embedding length (emitted as embedding_length_out). The output contains only
+// the assistant's own tensors — it is served as a separate --spec-draft-model
+// file, not embedded into the target GGUF.
 func ConvertGemma4MTPDraft(fsys fs.FS, f *os.File, baseKV ggml.KV) error {
 	if arch := baseKV.Architecture(); arch != "gemma4" {
 		return fmt.Errorf("gemma4 MTP draft requires a gemma4 base model, got %q", arch)
@@ -953,6 +925,19 @@ func ConvertGemma4MTPDraft(fsys fs.FS, f *os.File, baseKV ggml.KV) error {
 	}
 	if cfg.TextConfig.NumHiddenLayers == 0 {
 		return fmt.Errorf("gemma4 MTP draft config is missing text_config.num_hidden_layers")
+	}
+	if len(cfg.TextConfig.LayerTypes) == 0 {
+		return fmt.Errorf("gemma4 MTP draft config is missing text_config.layer_types (required for attention.sliding_window_pattern)")
+	}
+	// The loader rejects an assistant whose output width equals its own hidden
+	// size; the projections only make sense against the real target width.
+	if cfg.TextConfig.HiddenSize == nEmbdBackbone {
+		return fmt.Errorf("gemma4 MTP draft hidden_size (%d) must differ from the target embedding_length (%d)", cfg.TextConfig.HiddenSize, nEmbdBackbone)
+	}
+	// When the assistant config declares the backbone width it was trained
+	// against, require it to match the base model actually being paired.
+	if declared := cfg.backboneHiddenSize(); declared > 0 && declared != nEmbdBackbone {
+		return fmt.Errorf("gemma4 MTP draft was trained against backbone_hidden_size %d, but the base model's embedding_length is %d", declared, nEmbdBackbone)
 	}
 
 	m := &gemma4AssistantModel{

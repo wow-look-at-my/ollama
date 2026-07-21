@@ -20,6 +20,18 @@ REF="${LLAMA_CPP_REF:-master}"
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 version_file="${repo_root}/LLAMA_CPP_VERSION"
 
+old="$(cat "${version_file}" 2>/dev/null | awk 'NR==1 {print $1}' || true)"
+
+# A full 40-hex SHA in the checked-in file is a deliberate pin: keep it, so
+# builds are insulated from pushes to the llama.cpp fork and the file content
+# (the Docker COPY cache key) changes exactly when the pin is advanced. A
+# branch name (e.g. "master") still resolves to its tip SHA below. To advance
+# the pin, re-resolve explicitly: LLAMA_CPP_REF=master scripts/update-llamacpp-version.sh
+if [ -z "${LLAMA_CPP_REF:-}" ] && printf '%s' "${old}" | grep -Eq '^[0-9a-f]{40}$'; then
+  echo "LLAMA_CPP_VERSION pinned to ${old} — keeping the checked-in pin"
+  exit 0
+fi
+
 # git ls-remote needs no clone, no API token, and is not rate-limited like the
 # REST API. For a branch ref it prints exactly one "<sha>\t<ref>" line.
 sha="$(git ls-remote "${REPO}" "refs/heads/${REF}" | awk 'NR==1 {print $1}')"
@@ -29,7 +41,6 @@ if ! printf '%s' "${sha}" | grep -Eq '^[0-9a-f]{40}$'; then
   exit 1
 fi
 
-old="$(cat "${version_file}" 2>/dev/null | awk 'NR==1 {print $1}' || true)"
 printf '%s\n' "${sha}" > "${version_file}"
 
 if [ "${old}" = "${sha}" ]; then

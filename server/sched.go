@@ -133,14 +133,24 @@ func (s *Scheduler) GetRunner(c context.Context, m *Model, opts api.Options, ses
 	return s.getRunner(c, m, opts, sessionDuration, false, false, nil)
 }
 
-const contextShiftSmallContextLimit = 8192
-
-func resolveContextShift(shift *bool, numCtx int) bool {
+func resolveContextShift(shift *bool, m *Model) bool {
 	if shift != nil {
 		return *shift
 	}
 
-	return numCtx > 0 && numCtx < contextShiftSmallContextLimit
+	return supportsContextShift(m)
+}
+
+func supportsContextShift(m *Model) bool {
+	if m == nil {
+		return true
+	}
+
+	if m.Config.ModelFamily == "deepseek2" || slices.Contains(m.Config.ModelFamilies, "deepseek2") {
+		return false
+	}
+
+	return true
 }
 
 func effectiveModelContext(numCtx int, f *ggml.GGML) int {
@@ -175,7 +185,7 @@ func (s *Scheduler) getRunner(c context.Context, m *Model, opts api.Options, ses
 
 	contextShift := false
 	if m.ModelPath != "" {
-		contextShift = resolveContextShift(shift, opts.NumCtx)
+		contextShift = resolveContextShift(shift, m)
 	}
 
 	req := &LlmRequest{
@@ -567,7 +577,7 @@ func (s *Scheduler) load(req *LlmRequest, systemInfo ml.SystemInfo, gpus []ml.De
 			}
 
 			launchOpts = s.applyLlamaServerMmapDefaults(req, launchOpts, systemInfo, loadGpus, f, numParallel)
-			req.contextShift = resolveContextShift(req.shift, effectiveModelContext(launchOpts.NumCtx, f))
+			req.contextShift = resolveContextShift(req.shift, req.model)
 
 			config := llamaServerConfigForModel(req.model)
 			config.ContextShift = req.contextShift
@@ -585,7 +595,7 @@ func (s *Scheduler) load(req *LlmRequest, systemInfo ml.SystemInfo, gpus []ml.De
 			if slices.Contains(req.model.Config.Capabilities, "image") {
 				llama, err = imagegen.NewServer(modelName)
 			} else {
-				llama, err = mlxrunner.NewClient(modelName)
+				llama, err = mlxrunner.NewClient(modelName, req.opts.NumCtx)
 			}
 		}
 		if err != nil {
@@ -695,7 +705,7 @@ iGPUScan:
 	trainContext := modelTrainContext(f)
 	if effectiveNumCtx := llama.ContextLength(); req.model.ModelPath != "" && effectiveNumCtx > 0 {
 		req.opts.NumCtx = effectiveNumCtx
-		req.contextShift = resolveContextShift(req.shift, effectiveNumCtx)
+		req.contextShift = resolveContextShift(req.shift, req.model)
 	}
 	runner := &runnerRef{
 		model:           req.model,
@@ -1424,7 +1434,7 @@ func (runner *runnerRef) needsReload(ctx context.Context, req *LlmRequest) bool 
 
 	contextShift := req.contextShift
 	if req.model.ModelPath != "" {
-		contextShift = resolveContextShift(req.shift, optsNew.NumCtx)
+		contextShift = resolveContextShift(req.shift, req.model)
 	}
 	if runner.contextShift != contextShift {
 		return true
