@@ -110,6 +110,16 @@ if(NOT OLLAMA_HAVE_LLAMA_SERVER)
 else()
     file(READ "${CMAKE_SOURCE_DIR}/LLAMA_CPP_VERSION" OLLAMA_LLAMA_CPP_GIT_TAG)
     string(STRIP "${OLLAMA_LLAMA_CPP_GIT_TAG}" OLLAMA_LLAMA_CPP_GIT_TAG)
+    # A commit-SHA pin cannot use a shallow clone: --depth 1 fetches only
+    # branch tips, so checking out any older pinned commit fails with
+    # "reference is not a tree". Branch and tag refs keep the shallow fast
+    # path. (CMake's regex has no {40} quantifier, hence the LENGTH check.)
+    string(LENGTH "${OLLAMA_LLAMA_CPP_GIT_TAG}" _ollama_llama_cpp_tag_len)
+    if(_ollama_llama_cpp_tag_len EQUAL 40 AND OLLAMA_LLAMA_CPP_GIT_TAG MATCHES "^[0-9a-f]+$")
+        set(OLLAMA_LLAMA_CPP_GIT_SHALLOW FALSE)
+    else()
+        set(OLLAMA_LLAMA_CPP_GIT_SHALLOW TRUE)
+    endif()
     include(${CMAKE_SOURCE_DIR}/llama/compat/compat.cmake)
     if(DEFINED FETCHCONTENT_SOURCE_DIR_LLAMA_CPP AND NOT "${FETCHCONTENT_SOURCE_DIR_LLAMA_CPP}" STREQUAL "")
         get_filename_component(OLLAMA_LLAMA_CPP_SOURCE_DIR
@@ -125,10 +135,10 @@ else()
         set(OLLAMA_LLAMA_CPP_SOURCE_DIR "${CMAKE_BINARY_DIR}/_deps/llama_cpp-src")
         ExternalProject_Add(ollama-llama-cpp-source
             # wow-look-at-my/llama.cpp fork carrying the Gemma 4 MTP port (see
-            # llama/server/CMakeLists.txt); pinned by LLAMA_CPP_VERSION = mtp-b9409-0.1.
+            # llama/server/CMakeLists.txt); pinned by the LLAMA_CPP_VERSION file.
             GIT_REPOSITORY "https://github.com/wow-look-at-my/llama.cpp.git"
             GIT_TAG ${OLLAMA_LLAMA_CPP_GIT_TAG}
-            GIT_SHALLOW TRUE
+            GIT_SHALLOW ${OLLAMA_LLAMA_CPP_GIT_SHALLOW}
             SOURCE_DIR ${OLLAMA_LLAMA_CPP_SOURCE_DIR}
             CONFIGURE_COMMAND ""
             BUILD_COMMAND ""
