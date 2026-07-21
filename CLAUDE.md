@@ -149,12 +149,12 @@ locally `git apply --check` against the pinned tree) and regenerate per
 hunk (the `meta_borrowed` guard) for the pinned loader's zero-copy metadata
 path.
 
-Known issue at pin `d98acbd2...`: `llama-quantize` segfaults on any
-mmap-parsed input (`gguf_set_kv` reads `kv.data_string[j]` directly, which is
-empty for borrowed contexts — fix is a one-liner switching to
-`kv.get_val<std::string>(j)`). This breaks only the **fallback** quantize
-path (fused `Q4_K_M`/`Q8_0` is unaffected) and serving is unaffected. Bump
-the pin once the fix lands on the llama.cpp fork.
+History note: at the earlier pin `d98acbd2` `llama-quantize` segfaulted on
+any mmap-parsed input (`gguf_set_kv` read `kv.data_string[j]` directly, which
+is empty for borrowed zero-copy contexts), breaking the **fallback** quantize
+path. The one-line borrow-aware fix (`kv.get_val<std::string>(j)`) ships at
+the current pin (`f2aaaa6a`+); the bit-identical mixture test doubles as the
+regression check for it.
 
 ## GPU-only fork
 
