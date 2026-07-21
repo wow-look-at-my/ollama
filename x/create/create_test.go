@@ -622,6 +622,20 @@ func TestGetTensorQuantization_MixedPrecisionPromotion(t *testing.T) {
 	}
 }
 
+func mustMkdirAll(t *testing.T, path string) {
+	t.Helper()
+	if err := os.MkdirAll(path, 0o755); err != nil {
+		t.Fatalf("MkdirAll(%q): %v", path, err)
+	}
+}
+
+func mustWriteFile(t *testing.T, path string, data []byte) {
+	t.Helper()
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatalf("WriteFile(%q): %v", path, err)
+	}
+}
+
 func createMinimalSafetensors(t *testing.T, path string) {
 	t.Helper()
 
@@ -766,4 +780,3 @@ func TestDetectAssistantDir(t *testing.T) {
 		})
 	}
 }
-
