@@ -19,9 +19,9 @@ FROM scratch AS local-mlx-c
 # provides ccache (not in base AppStream); the rest of the toolchain is identical.
 FROM --platform=linux/amd64 almalinux:8 AS base-amd64
 RUN dnf install -y epel-release \
-    && dnf install -y yum-utils ccache git python3 patch gcc-toolset-11-gcc gcc-toolset-11-gcc-c++ gcc-toolset-11-binutils \
+    && dnf install -y yum-utils ccache git python3 patch gcc-toolset-13-gcc gcc-toolset-13-gcc-c++ gcc-toolset-13-binutils \
     && yum-config-manager --add-repo https://developer.download.nvidia.com/compute/cuda/repos/rhel8/x86_64/cuda-rhel8.repo
-ENV PATH=/opt/rh/gcc-toolset-11/root/usr/bin:$PATH
+ENV PATH=/opt/rh/gcc-toolset-13/root/usr/bin:$PATH
 
 FROM --platform=linux/arm64 almalinux:8 AS base-arm64
 # install epel-release for ccache
@@ -46,8 +46,8 @@ ENV LDFLAGS=-s
 #
 
 FROM base AS cpu-deps
-RUN dnf install -y gcc-toolset-11-gcc gcc-toolset-11-gcc-c++
-ENV PATH=/opt/rh/gcc-toolset-11/root/usr/bin:$PATH
+RUN dnf install -y gcc-toolset-13-gcc gcc-toolset-13-gcc-c++
+ENV PATH=/opt/rh/gcc-toolset-13/root/usr/bin:$PATH
 
 FROM base AS cuda-12-deps
 ARG CUDA12VERSION=12.8
@@ -103,8 +103,8 @@ RUN --mount=type=cache,target=/root/.ccache \
         && for lib in \
             /usr/lib64/libgomp.so* \
             /usr/lib64/libomp.so* \
-            /opt/rh/gcc-toolset-11/root/usr/lib64/libgomp.so* \
-            /opt/rh/gcc-toolset-11/root/usr/lib64/libomp.so*; do \
+            /opt/rh/gcc-toolset-13/root/usr/lib64/libgomp.so* \
+            /opt/rh/gcc-toolset-13/root/usr/lib64/libomp.so*; do \
                 [ -e "$lib" ] && cp -a "$lib" dist/lib/ollama/ || true; \
             done
 
@@ -147,7 +147,7 @@ FROM scratch AS publish-llama-server-cuda_v13
 COPY --from=llama-server-cuda_v13 dist/lib/ollama /lib/ollama/
 
 FROM rocm-7-deps AS llama-server-rocm_v7_2
-ENV CC=clang CXX=clang++
+ENV CC=clang CXX=clang++ CXXFLAGS=--gcc-toolchain=/opt/rh/gcc-toolset-13/root/usr
 COPY LLAMA_CPP_VERSION .
 COPY llama/server llama/server
 COPY llama/compat llama/compat

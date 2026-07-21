@@ -33,7 +33,7 @@ type IntegrationInfo struct {
 	Description string
 }
 
-var launcherIntegrationOrder = []string{"claude", "codex-app", "hermes", "openclaw", "opencode", "hermes-desktop", "codex", "copilot", "omp", "cline", "droid", "pi", "pool", "qwen"}
+var launcherIntegrationOrder = []string{"claude", "chatgpt", "hermes", "openclaw", "opencode", "hermes-desktop", "codex", "copilot", "omp", "cline", "droid", "pi", "pool", "qwen"}
 
 var integrationSpecs = []*IntegrationSpec{
 	{
@@ -44,6 +44,10 @@ var integrationSpecs = []*IntegrationSpec{
 			CheckInstalled: func() bool {
 				_, err := (&Claude{}).findPath()
 				return err == nil
+			},
+			EnsureInstalled: func() error {
+				_, err := ensureClaudeInstalled()
+				return err
 			},
 			URL: "https://code.claude.com/docs/en/quickstart",
 		},
@@ -91,15 +95,15 @@ var integrationSpecs = []*IntegrationSpec{
 		},
 	},
 	{
-		Name:        "codex-app",
+		Name:        chatGPTIntegrationName,
 		Runner:      &CodexApp{},
-		Aliases:     []string{"codex-desktop", "codex-gui"},
-		Description: "An AI agent you can delegate real work to, by OpenAI",
+		Aliases:     []string{codexAppIntegrationName, "codex-desktop", "codex-gui"},
+		Description: "Complete work with ChatGPT",
 		Install: IntegrationInstallSpec{
 			CheckInstalled: func() bool {
 				return codexAppInstalled()
 			},
-			URL: "https://developers.openai.com/codex/quickstart",
+			URL: "https://chatgpt.com/download",
 		},
 	},
 	{
@@ -152,6 +156,10 @@ var integrationSpecs = []*IntegrationSpec{
 			CheckInstalled: func() bool {
 				_, ok := findOpenCode()
 				return ok
+			},
+			EnsureInstalled: func() error {
+				_, err := ensureOpenCodeInstalled()
+				return err
 			},
 			URL: "https://opencode.ai",
 		},
