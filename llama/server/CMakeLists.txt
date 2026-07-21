@@ -118,6 +118,17 @@ include(FetchContent)
 file(READ "${CMAKE_CURRENT_SOURCE_DIR}/../../LLAMA_CPP_VERSION" LLAMA_CPP_GIT_TAG)
 string(STRIP "${LLAMA_CPP_GIT_TAG}" LLAMA_CPP_GIT_TAG)
 
+# A commit-SHA pin cannot use a shallow clone: --depth 1 fetches only branch
+# tips, so checking out any older pinned commit fails with "reference is not
+# a tree". Branch and tag refs keep the shallow fast path. (CMake's regex has
+# no {40} quantifier, hence the LENGTH check.)
+string(LENGTH "${LLAMA_CPP_GIT_TAG}" _llama_cpp_tag_len)
+if(_llama_cpp_tag_len EQUAL 40 AND LLAMA_CPP_GIT_TAG MATCHES "^[0-9a-f]+$")
+    set(LLAMA_CPP_GIT_SHALLOW FALSE)
+else()
+    set(LLAMA_CPP_GIT_SHALLOW TRUE)
+endif()
+
 # Allow local source override via environment variable (like OLLAMA_MLX_SOURCE)
 if(DEFINED ENV{OLLAMA_LLAMA_CPP_SOURCE})
     get_filename_component(_src "$ENV{OLLAMA_LLAMA_CPP_SOURCE}" ABSOLUTE BASE_DIR ${CMAKE_CURRENT_SOURCE_DIR})
@@ -183,14 +194,15 @@ set(LLAMA_OPENSSL OFF CACHE BOOL "" FORCE)
 # Repointed to the wow-look-at-my/llama.cpp fork that carries the Gemma 4 MTP
 # (gemma4_assistant) port on top of upstream b9409. LLAMA_CPP_VERSION pins a ref
 # on the fork's `gemma4-mtp-b9409` line (a tag like mtp-b9409-0.2 or a commit
-# SHA). GIT_TAG accepts a tag, branch, or commit; GitHub serves reachable SHAs so
-# GIT_SHALLOW still works. To return to stock upstream, restore the ggml-org URL
-# and set LLAMA_CPP_VERSION back to a plain upstream tag.
+# SHA). GIT_TAG accepts a tag, branch, or commit; commit pins clone full history
+# (a shallow clone only serves branch tips — see LLAMA_CPP_GIT_SHALLOW above).
+# To return to stock upstream, restore the ggml-org URL and set
+# LLAMA_CPP_VERSION back to a plain upstream tag.
 FetchContent_Declare(
     llama_cpp
     GIT_REPOSITORY "https://github.com/wow-look-at-my/llama.cpp.git"
     GIT_TAG ${LLAMA_CPP_GIT_TAG}
-    GIT_SHALLOW TRUE
+    GIT_SHALLOW ${LLAMA_CPP_GIT_SHALLOW}
     ${_ollama_compat_patch_cmd}
 )
 FetchContent_MakeAvailable(llama_cpp)
