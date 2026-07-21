@@ -741,10 +741,11 @@ func convertMTPDraftFromSafetensors(fsys fs.FS, out *os.File, baseLayers []*laye
 
 	baseKV := baseLayer.GGML.KV()
 
-	// Gemma 4 MTP drafts are a separate gemma4_assistant model that the runtime
-	// loads via --mtp-head and attaches to the target (cross-attending its KV).
-	// The drafter GGUF contains only the assistant's own tensors, so there is no
-	// need to read the base model's tensors.
+	// Gemma 4 MTP drafts are a separate gemma4-assistant model that llama-server
+	// loads as a --spec-type draft-mtp draft (--spec-draft-model) and attaches to
+	// the target (sharing its KV cache). The drafter GGUF contains only the
+	// assistant's own tensors, so there is no need to read the base model's
+	// tensors.
 	if baseKV.Architecture() == "gemma4" {
 		return convert.ConvertGemma4MTPDraft(fsys, out, baseKV)
 	}
