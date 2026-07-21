@@ -7,17 +7,22 @@ decoding. MTP needs two pieces:
 2. a small **drafter** ("assistant") that proposes several tokens the target
    verifies in one pass.
 
-In this fork the drafter is a **separate** GGUF with
-`general.architecture = "gemma4_assistant"`. At serve time `llama-server` loads it
-into the target via `--mtp-head` and it cross-attends the target's KV cache (so
-its attention is query-only — no second KV cache). You produce it with a single
-`ollama create` from the Hugging Face safetensors, using a Modelfile with a
-`DRAFT` directive.
+The drafter is a **separate** GGUF with
+`general.architecture = "gemma4-assistant"` — the dialect llama.cpp's own
+Gemma 4 assistant implementation loads. At serve time `llama-server` runs it as
+a standard MTP draft model
+(`--spec-type draft-mtp --spec-draft-model <path>`); it shares the target's KV
+cache (so its attention is query-only — no second KV cache) and consumes the
+target's last-layer activations. You produce it with a single `ollama create`
+from the Hugging Face safetensors, using a Modelfile with a `DRAFT` directive.
 
-> The drafter is **not** embedded into the target GGUF. Bundling `draft.*` tensors
-> into one file is the old, removed design and makes the target loader reject the
-> file (`done_getting_tensors: wrong number of tensors`). Keep the drafter
-> separate — the converter and `ollama create` below do this for you.
+> **Breaking**: models created with an older build of this fork used a private
+> `gemma4_assistant` (underscore) dialect served via `--mtp-head`. Those GGUFs
+> do **not** load on the current pinned llama.cpp — re-create the model with
+> `ollama create` (below) after updating. The drafter is also **not** embedded
+> into the target GGUF; bundling `draft.*` tensors into one file is an even
+> older removed design that the target loader rejects
+> (`done_getting_tensors: wrong number of tensors`).
 
 ## TL;DR
 
@@ -38,8 +43,8 @@ Defaults: model `gemma4-mtp`, target `google/gemma-4-31B-it`, drafter
 
 No. That published artifact is **macOS/MLX-gated** (`HTTP 412: this model requires
 macOS`) and is an **MLX** model — its MTP is baked into the MLX format, not the
-separate `gemma4_assistant` GGUF this fork's `llama-server` loads via `--mtp-head`.
-You must build from the Hugging Face safetensors as below.
+separate `gemma4-assistant` GGUF this fork's `llama-server` loads via
+`--spec-draft-model`. You must build from the Hugging Face safetensors as below.
 
 ## Prerequisites
 
@@ -67,7 +72,7 @@ If you'd rather not use the script:
    ```
    `FROM` is the target safetensors directory; `DRAFT` is the assistant
    safetensors directory. `ollama create` converts the target to GGUF and the
-   drafter to a standalone `gemma4_assistant` GGUF (a `MediaTypeImageDraft`
+   drafter to a standalone `gemma4-assistant` GGUF (a `MediaTypeImageDraft`
    layer).
 3. Create the model:
    ```sh
@@ -89,26 +94,35 @@ If you'd rather not use the script:
 ## Verify
 
 MTP only helps at **temperature 0** (greedy), where it is mathematically
-equivalent to plain autoregressive decoding — identical output, just faster:
+equivalent to plain autoregressive decoding — identical output, just faster.
+On the GPU box (RTX A6000), after building this fork and re-creating the
+model:
 
-```sh
-curl http://localhost:11434/api/generate -d '{
-  "model":"gemma4-mtp","prompt":"What is 2+2?","stream":false,
-  "options":{"temperature":0,"num_ctx":4096}
-}'
-```
-
-In the `llama-server` logs, confirm the drafter is wired up: look for
-`--spec-type gemma4-mtp --mtp-head <path>` and the assistant loading as
-`gemma4_assistant`.
+1. Re-create the model (old-dialect builds cannot be reused):
+   ```sh
+   ollama create gemma4-mtp -f Modelfile --quantize q4_K_M
+   ```
+2. Serve and generate greedily:
+   ```sh
+   ollama serve &
+   curl http://localhost:11434/api/generate -d '{
+     "model":"gemma4-mtp","prompt":"What is 2+2?","stream":false,
+     "options":{"temperature":0,"num_ctx":4096}
+   }'
+   ```
+3. In the `llama-server` logs, confirm the drafter is wired up: the command
+   line contains `--spec-type draft-mtp --spec-draft-model <path>` (plus
+   `--spec-draft-n-max N --spec-draft-backend-sampling`), and the draft model
+   loads with `arch = gemma4-assistant`.
 
 ## Notes
 
 - Tested on an RTX A6000 (49 GB). At `q4_K_M` + `num_ctx=4096` the target plus
   drafter use ~23.7 GiB of VRAM.
-- The drafter carries the target's tokenizer (the runtime compares vocab text),
-  and `gemma4_assistant.n_embd_backbone` must equal the target's embedding length
-  (5376 for `gemma-4-31B-it`). The converter handles both automatically.
+- The drafter carries the target's tokenizer (the runtime compares vocab type
+  and token text), and `gemma4-assistant.embedding_length_out` must equal the
+  target's embedding length (5376 for `gemma-4-31B-it`). The converter handles
+  both automatically and rejects a mismatched target/assistant pair.
 - Other sizes work too — point `TARGET_REPO`/`DRAFT_REPO` at the matching pair,
   e.g. `google/gemma-4-12B-it` + `google/gemma-4-12B-it-assistant`.
 - Converter internals and the on-disk contract: see `convert/convert_gemma4.go`

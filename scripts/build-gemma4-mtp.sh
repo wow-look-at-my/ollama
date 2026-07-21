@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 #
 # Build the Gemma 4 Multi-Token-Prediction model for this fork: the full Gemma 4
-# target plus a SEPARATE gemma4_assistant drafter GGUF (attached at serve time via
-# --mtp-head). One command: download the Hugging Face safetensors, write a
-# Modelfile, and run `ollama create`.
+# target plus a SEPARATE gemma4-assistant drafter GGUF (served as a llama.cpp
+# draft model via --spec-type draft-mtp --spec-draft-model). One command:
+# download the Hugging Face safetensors, write a Modelfile, and run
+# `ollama create`.
 #
 # Prerequisites:
 #   - this fork's `ollama` built and on PATH, with `ollama serve` on localhost
@@ -74,11 +75,11 @@ ollama create "${create_args[@]}"
 
 cat <<EOF
 
-Done. The drafter is a separate gemma4_assistant GGUF, attached at serve time.
+Done. The drafter is a separate gemma4-assistant GGUF, served as a draft model.
 MTP helps at temperature=0 (greedy). Verify with:
 
   curl http://localhost:11434/api/generate -d '{"model":"${MODEL_NAME}","prompt":"What is 2+2?","stream":false,"options":{"temperature":0,"num_ctx":4096}}'
 
-In the llama-server logs, look for: --spec-type gemma4-mtp --mtp-head <path>
-and the assistant loading as gemma4_assistant.
+In the llama-server logs, look for: --spec-type draft-mtp --spec-draft-model <path>
+and the draft model loading with arch = gemma4-assistant.
 EOF

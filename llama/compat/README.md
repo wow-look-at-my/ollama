@@ -25,8 +25,6 @@ intentionally skipped so a developer can iterate on a local llama.cpp tree.
   small tensor repacking primitives.
 - `001-llama-cpp-hooks.patch` - small additive call-site edits in llama.cpp files.
   It currently touches `src/llama-model-loader.cpp` and `tools/mtmd/clip.cpp`.
-- `002-llama-cpp-ui-empty-assets.patch` - lets the llama.cpp UI embed helper
-  generate an empty asset table when no UI assets are present.
 - `compat.cmake`, `apply-patch.cmake` - CMake glue and an idempotent applier
   (used by `llama/server/CMakeLists.txt`) that applies every `*.patch` under
   this directory by numeric filename order — the hooks patch plus each
@@ -74,27 +72,19 @@ llama.cpp-compatible on disk.
 
 ## Model-load progress
 
-Model-load progress is **not** part of this patch — it lives directly in the
-pinned llama.cpp source (`LLAMA_CPP_VERSION`, the `gemma4-mtp-b9409` line). The
-server reports the load fraction llama.cpp already computes so Ollama can show a
-real 0..1 value while a cold model loads (instead of an indefinite spinner):
+Model-load progress is **not** part of this patch. The Go side
+(`llm/llama_server.go` `getServerStatus`) parses an optional `progress` float
+(0..1) from llama-server's `/health` "loading model" response and surfaces it
+via `/api/ps?include=loading` — see `docs/api.md`. The parsing is additive: a
+llama-server that omits the field reads as 0/absent.
 
-- `tools/server/server-common.h` adds a header-only `server_load_progress()`
-  accessor returning a shared `std::atomic<float>` in `[0,1]`.
-- `tools/server/server-context.cpp` sets `params.load_progress_callback` before
-  `common_init_from_params()`, so the model loader's `progress_callback`
-  (`size_done / size_data` in `llama_model_loader::load_all_data`) stores the
-  fraction into that atomic as tensors are read.
-- `tools/server/server-http.cpp` makes the not-ready middleware answer the
-  `/health` and `/v1/health` endpoints with
-  `{"status":"loading model","progress":<float 0..1>}` instead of the generic
-  503 error body.
-
-`llm/llama_server.go` `getServerStatus` parses the fraction (additive: an
-unmodified llama-server omits `progress` and the Go side reads it as 0/absent)
-and surfaces it via `/api/ps?include=loading` — see `docs/api.md`. To re-derive
-the change against the pinned source, see the `wow-look-at-my/llama.cpp` commit
-on the `gemma4-mtp-b9409` line that `LLAMA_CPP_VERSION` points at.
+The server-side emitter used to live in the pinned llama.cpp fork's
+`tools/server` patches; the 2026-07 uprev to upstream llama.cpp dropped those
+(upstream's server answers not-ready requests with a plain 503 error body and
+routes its own `load_progress_callback` to the model-router state callback
+instead of `/health`). Until an emitter is re-added on the llama.cpp side,
+`/api/ps` reports 0 progress during loads. The Go plumbing is kept so re-adding
+the server-side patch restores the feature without an ollama change.
 
 
 ## Supported Transformations
