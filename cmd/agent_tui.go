@@ -165,26 +165,6 @@ func agentSkillSystemContext(catalog *coreagent.SkillCatalog, registry *coreagen
 	return catalog.SystemContext()
 }
 
-func selectAgentModel(ctx context.Context, client *api.Client, current string) (string, error) {
-	models, err := agentModelOptions(ctx, client)
-	if err != nil {
-		return "", err
-	}
-	if len(models) == 0 {
-		return "", errors.New("no models available, run 'ollama pull <model>' first")
-	}
-
-	items := agentSelectionItems(models)
-	switch {
-	case launch.DefaultSingleSelectorWithUpdates != nil:
-		return launch.DefaultSingleSelectorWithUpdates("Select model to run:", items, current, nil)
-	case launch.DefaultSingleSelector != nil:
-		return launch.DefaultSingleSelector("Select model to run:", items, current)
-	default:
-		return "", errors.New("no selector configured")
-	}
-}
-
 func agentSelectionItems(models []agentchat.ModelOption) []launch.SelectionItem {
 	items := make([]launch.SelectionItem, 0, len(models))
 	for _, model := range models {
@@ -240,7 +220,8 @@ func agentDefaultSystemPromptWithWorkingDir(now time.Time, modelName string, wor
 		"Current date: " + date + ".",
 		"",
 	}
-	parts = append(parts,
+	parts = append(
+		parts,
 		"Be concise, practical, and action-oriented. Use tools when they materially help. Verify current or fast-changing facts with web tools when available; otherwise state uncertainty.",
 		"",
 		"Use "+shellName+" carefully. Prefer read-only inspection first. Stay within the current working directory unless explicitly asked. Surface intent before risky actions such as writes, deletes, moves, installs, git state changes, service changes, sudo, secrets access, network scripts, or commands outside the working directory. Request approval when required and do not work around denied approvals.",
